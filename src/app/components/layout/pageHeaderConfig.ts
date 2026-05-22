@@ -86,6 +86,14 @@ export const PAGE_HEADER_CONFIG: Record<NavPage, PageHeaderPreset> = {
     subtitle: "Review permissions grouped by module.",
     searchEnabled: false,
   },
+  "audit-log": {
+    page: "audit-log",
+    breadcrumbs: withRoot("Security", "Audit Log"),
+    sectionLabel: "Security",
+    title: "Audit Log",
+    subtitle: "System-generated audit trail for Compliance Manager",
+    searchEnabled: false,
+  },
   "org-structure": {
     page: "org-structure",
     breadcrumbs: withRoot("Org Structure"),
