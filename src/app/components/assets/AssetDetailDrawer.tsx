@@ -26,9 +26,20 @@ import {
   getAssetLocation,
 } from "../../../services/asset-location.service";
 import {
+  getAssetAuthoredDocuments,
+  getReleaseAuthoredDocuments,
+} from "../../../services/authored-document.service";
+import {
+  getAssetQualificationDocuments,
+  getReleaseQualificationDocuments,
+} from "../../../services/qualification-document.service";
+import { getSupplierEvaluations } from "../../../services/supplier-evaluation.service";
+import { getAssetVectorizationSummary } from "../../../services/document-vectorization.service";
+import {
   deleteDocumentLink,
   DocumentLinkRecord,
   getAssetDocuments,
+  getReleaseDocuments,
   reprocessDocumentVectorization,
 } from "../../../services/document-link.service";
 import {
@@ -75,11 +86,7 @@ export type AssetDetailTab =
   | "overview"
   | "location"
   | "finance"
-  | "releases"
-  | "supplier-evaluation"
-  | "document-hub"
-  | "rag-insights"
-  | "documents";
+  | "references";
 
 interface AssetDetailDrawerProps {
   open: boolean;
@@ -155,6 +162,29 @@ const getReleaseSortValue = (release: ReleaseRecord): number => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const assetDetailTabs: AssetDetailTab[] = ["overview", "location", "finance", "references"];
+
+const normalizeAssetDetailTab = (tab?: AssetDetailTab | string | null): AssetDetailTab =>
+  assetDetailTabs.includes(tab as AssetDetailTab) ? (tab as AssetDetailTab) : "overview";
+
+interface AssetReferenceSummary {
+  documents: number;
+  releases: number;
+  supplierEvaluations: number;
+  intelligenceTrackedDocuments: number;
+  intelligenceChunks: number;
+  intelligenceStatus: string;
+}
+
+const emptyReferenceSummary: AssetReferenceSummary = {
+  documents: 0,
+  releases: 0,
+  supplierEvaluations: 0,
+  intelligenceTrackedDocuments: 0,
+  intelligenceChunks: 0,
+  intelligenceStatus: "No tracked documents",
+};
+
 const InfoField = ({ label, value }: { label: string; value: string }) => (
   <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
     <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
@@ -186,7 +216,7 @@ export function AssetDetailDrawer({
   const canDeleteDocument = hasPermission("DOCUMENT_DELETE");
   const [asset, setAsset] = useState<AssetRecord | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<AssetDetailTab>(initialTab);
+  const [activeTab, setActiveTab] = useState<AssetDetailTab>(normalizeAssetDetailTab(initialTab));
   const [finance, setFinance] = useState<AssetFinanceRecord | null>(null);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeModalOpen, setFinanceModalOpen] = useState(false);
@@ -215,13 +245,15 @@ export function AssetDetailDrawer({
   const [releaseDocumentsTarget, setReleaseDocumentsTarget] = useState<ReleaseRecord | null>(null);
   const [assessmentReleaseId, setAssessmentReleaseId] = useState<string | null>(null);
   const [assessmentReloadToken, setAssessmentReloadToken] = useState(0);
+  const [referenceSummary, setReferenceSummary] = useState<AssetReferenceSummary>(emptyReferenceSummary);
+  const [referencesLoading, setReferencesLoading] = useState(false);
   const { options: sourceSystemOptions } = useOmsSourceSystemOptions(
-    open && (activeTab === "documents" || activeTab === "document-hub" || activeTab === "rag-insights" || activeTab === "supplier-evaluation" || Boolean(releaseDocumentsTarget)),
+    open && Boolean(releaseDocumentsTarget),
   );
 
   useEffect(() => {
     if (!open) {
-      setActiveTab(initialTab);
+      setActiveTab(normalizeAssetDetailTab(initialTab));
       setFinance(null);
       setFinanceLoading(false);
       setFinanceModalOpen(false);
@@ -242,10 +274,12 @@ export function AssetDetailDrawer({
       setReleaseDocumentsTarget(null);
       setAssessmentReleaseId(null);
       setAssessmentReloadToken(0);
+      setReferenceSummary(emptyReferenceSummary);
+      setReferencesLoading(false);
       return;
     }
 
-    setActiveTab(initialTab);
+    setActiveTab(normalizeAssetDetailTab(initialTab));
   }, [open, assetId, initialTab]);
 
   useEffect(() => {
@@ -347,6 +381,72 @@ export function AssetDetailDrawer({
     }
   }, [assetId]);
 
+  const loadReferences = useCallback(async () => {
+    if (!assetId) return;
+
+    setReferencesLoading(true);
+    try {
+      const [releaseResult, evaluationResult, summaryResult, assetAuthoredResult, assetQualificationResult, assetLinkedResult] =
+        await Promise.allSettled([
+          getReleasesByAssetId(assetId),
+          getSupplierEvaluations({ asset_uuid: assetId }),
+          getAssetVectorizationSummary(assetId),
+          getAssetAuthoredDocuments(assetId),
+          getAssetQualificationDocuments(assetId),
+          getAssetDocuments(assetId),
+        ]);
+
+      const releaseList = releaseResult.status === "fulfilled" ? releaseResult.value : [];
+      const releaseDocumentResults = await Promise.allSettled(
+        releaseList.map(async (release) => {
+          const [authored, qualification, linked] = await Promise.allSettled([
+            getReleaseAuthoredDocuments(release.release_id),
+            getReleaseQualificationDocuments(release.release_id),
+            getReleaseDocuments(release.release_id),
+          ]);
+
+          return (
+            (authored.status === "fulfilled" ? authored.value.length : 0) +
+            (qualification.status === "fulfilled" ? qualification.value.length : 0) +
+            (linked.status === "fulfilled" ? linked.value.length : 0)
+          );
+        }),
+      );
+
+      const releaseDocumentCount = releaseDocumentResults.reduce(
+        (total, result) => total + (result.status === "fulfilled" ? result.value : 0),
+        0,
+      );
+      const assetDocumentCount =
+        (assetAuthoredResult.status === "fulfilled" ? assetAuthoredResult.value.length : 0) +
+        (assetQualificationResult.status === "fulfilled" ? assetQualificationResult.value.length : 0) +
+        (assetLinkedResult.status === "fulfilled" ? assetLinkedResult.value.length : 0);
+      const vectorSummary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
+      const tracked = vectorSummary?.tracked_document_count ?? 0;
+      const completed = vectorSummary?.completed_count ?? 0;
+      const failed = vectorSummary?.failed_count ?? 0;
+      const processing = (vectorSummary?.pending_or_queued_count ?? 0) + (vectorSummary?.processing_count ?? 0);
+
+      setReferenceSummary({
+        documents: assetDocumentCount + releaseDocumentCount,
+        releases: releaseList.length,
+        supplierEvaluations: evaluationResult.status === "fulfilled" ? evaluationResult.value.length : 0,
+        intelligenceTrackedDocuments: tracked,
+        intelligenceChunks: vectorSummary?.total_chunk_count ?? 0,
+        intelligenceStatus:
+          tracked === 0
+            ? "No tracked documents"
+            : `${completed}/${tracked} completed${processing ? `, ${processing} active` : ""}${failed ? `, ${failed} failed` : ""}`,
+      });
+    } catch (error) {
+      console.error("Failed to load asset references:", error);
+      toast.error("Failed to load asset references");
+      setReferenceSummary(emptyReferenceSummary);
+    } finally {
+      setReferencesLoading(false);
+    }
+  }, [assetId]);
+
   useEffect(() => {
     if (!open || !assetId) {
       setReleases([]);
@@ -354,7 +454,7 @@ export function AssetDetailDrawer({
       return;
     }
 
-    if (activeTab !== "releases" && activeTab !== "documents") return;
+    if (activeTab !== "references") return;
     void loadReleases();
   }, [activeTab, assetId, loadReleases, open]);
 
@@ -387,9 +487,9 @@ export function AssetDetailDrawer({
       return;
     }
 
-    if (activeTab !== "documents") return;
-    void loadDocuments();
-  }, [activeTab, assetId, loadDocuments, open]);
+    if (activeTab !== "references") return;
+    void loadReferences();
+  }, [activeTab, assetId, loadReferences, open]);
 
   const hasActiveDocumentVectorization = useMemo(
     () => documents.some(isDocumentVectorizationActive),
@@ -397,7 +497,7 @@ export function AssetDetailDrawer({
   );
 
   useEffect(() => {
-    if (!open || !assetId || activeTab !== "documents" || !hasActiveDocumentVectorization) return;
+    if (!open || !assetId || activeTab !== "references" || !hasActiveDocumentVectorization) return;
 
     const intervalId = window.setInterval(() => {
       void loadDocuments({ silent: true });
@@ -461,6 +561,8 @@ export function AssetDetailDrawer({
     asset && !asset.can_create_release
       ? `Release creation is unavailable because ${findLookupLabel(assetClasses, asset.asset_class)} is not configured for upgrade-managed releases.`
       : null;
+  const assetReferenceKey = asset?.asset_id || assetId || "";
+  const buildReferenceUrl = (path: string) => `${path}?asset_id=${encodeURIComponent(assetReferenceKey)}`;
 
   const handleDeleteReleaseClick = (release: ReleaseRecord) => {
     setReleaseToDelete(release);
@@ -618,20 +720,8 @@ export function AssetDetailDrawer({
                 <TabsTrigger value="finance" className="px-4">
                   Finance
                 </TabsTrigger>
-                <TabsTrigger value="releases" className="px-4">
-                  Releases
-                </TabsTrigger>
-                <TabsTrigger value="supplier-evaluation" className="px-4">
-                  Supplier Eval
-                </TabsTrigger>
-                <TabsTrigger value="document-hub" className="px-4">
-                  Document Hub
-                </TabsTrigger>
-                <TabsTrigger value="rag-insights" className="px-4">
-                  RAG Insights
-                </TabsTrigger>
-                <TabsTrigger value="documents" className="px-4">
-                  Documents
+                <TabsTrigger value="references" className="px-4">
+                  References
                 </TabsTrigger>
               </TabsList>
 
@@ -1061,6 +1151,92 @@ export function AssetDetailDrawer({
                       </div>
                     </div>
                   </>
+                )}
+              </TabsContent>
+
+              <TabsContent value="references" className="space-y-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                    <div>
+                      <p className="text-xs text-slate-500">Asset Name</p>
+                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Asset ID</p>
+                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Current Version</p>
+                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_version)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Reference Key</p>
+                      <p className="text-sm font-medium text-slate-900">Asset ID</p>
+                    </div>
+                  </div>
+                </div>
+
+                {referencesLoading ? (
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                    Loading related references...
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Referenced Documents</p>
+                          <p className="mt-1 text-xs text-slate-500">Authored, qualification, and linked document records.</p>
+                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.documents}</p>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" asChild>
+                          <a href={buildReferenceUrl("/document-portal")}>Go to Module</a>
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Related Releases</p>
+                          <p className="mt-1 text-xs text-slate-500">Release records managed outside Asset Master.</p>
+                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.releases}</p>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" asChild>
+                          <a href={buildReferenceUrl("/asset-releases")}>Go to Module</a>
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Supplier Evaluations</p>
+                          <p className="mt-1 text-xs text-slate-500">Supplier response and scoring workflows.</p>
+                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.supplierEvaluations}</p>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" asChild>
+                          <a href={buildReferenceUrl("/supplier-evaluations")}>Go to Module</a>
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Document Intelligence</p>
+                          <p className="mt-1 text-xs text-slate-500">{referenceSummary.intelligenceStatus}</p>
+                          <p className="mt-4 text-2xl font-semibold text-blue-700">
+                            {referenceSummary.intelligenceTrackedDocuments}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">{referenceSummary.intelligenceChunks} chunks</p>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" asChild>
+                          <a href={buildReferenceUrl("/document-intelligence")}>Go to Module</a>
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </TabsContent>
 

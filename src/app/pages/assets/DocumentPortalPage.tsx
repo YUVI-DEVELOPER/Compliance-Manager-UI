@@ -8,9 +8,11 @@ import {
 } from "../../../services/authored-document.service";
 import { AssetRecord, getAssets } from "../../../services/asset.service";
 import {
+  deleteDocumentLink,
   DocumentLinkRecord,
   getAssetDocuments,
   getReleaseDocuments,
+  reprocessDocumentVectorization,
 } from "../../../services/document-link.service";
 import {
   getAssetQualificationDocuments,
@@ -18,6 +20,7 @@ import {
   QualificationDocumentRecord,
 } from "../../../services/qualification-document.service";
 import { getReleasesByAssetId, ReleaseRecord } from "../../../services/release.service";
+import { getSuppliers, SupplierRecord } from "../../../services/supplier.service";
 import { CommonPageHeader } from "../../components/layout/CommonPageHeader";
 import { buildPageHeaderStats, getPageHeaderConfig } from "../../components/layout/pageHeaderConfig";
 import { Badge } from "../../components/ui/badge";
@@ -39,6 +42,21 @@ import {
 } from "../../components/ui/table";
 import { LookupOption } from "../../services/lookupValue.service";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../../components/ui/alert-dialog";
+import { AuthoredDocumentPanel } from "../../components/assets/AuthoredDocumentPanel";
+import { AssetDocumentTable } from "../../components/assets/AssetDocumentTable";
+import { CreateDocumentLinkModal } from "../../components/assets/CreateDocumentLinkModal";
+import { EditDocumentLinkModal } from "../../components/assets/EditDocumentLinkModal";
+import { QualificationDocumentPanel } from "../../components/assets/QualificationDocumentPanel";
+import {
   formatAuthoredDocumentDate,
   formatAuthoredDocumentPublishStatus,
   formatAuthoredDocumentStatus,
@@ -51,9 +69,12 @@ import {
   formatDocumentLinkType,
   formatDocumentSourceSystem,
   formatVectorizationStatus,
+  DocumentLinkContext,
   getSafeDocumentAccessUrl,
   getVectorizationStatusBadgeClass,
+  isDocumentVectorizationActive,
   loadOmsSourceSystemOptions,
+  mapDocumentLinkAxiosError,
 } from "../../components/assets/documentLinkForm.shared";
 import {
   formatQualificationDocumentDate,
@@ -63,6 +84,7 @@ import {
   getQualificationStatusBadgeClass,
   getQualificationTypeBadgeClass,
 } from "../../components/assets/qualificationDocumentForm.shared";
+import { useAuth } from "../../auth/useAuth";
 
 type PortalDocumentKind = "AUTHORED" | "QUALIFICATION" | "LINKED";
 
@@ -114,6 +136,27 @@ const IMPORTANT_TEXT_PATTERNS = [
 ];
 
 const normalize = (value?: string | null): string => (value ?? "").trim();
+
+const getInitialAssetFilter = (): string => {
+  if (typeof window === "undefined") return "ALL";
+  return new URLSearchParams(window.location.search).get("asset_id") || "ALL";
+};
+
+const updateAssetQueryParam = (assetId: string) => {
+  const url = new URL(window.location.href);
+  url.pathname = "/document-portal";
+  if (assetId === "ALL") {
+    url.searchParams.delete("asset_id");
+  } else {
+    url.searchParams.set("asset_id", assetId);
+  }
+  window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+};
+
+const findAssetByToken = (assets: AssetRecord[], token: string): AssetRecord | null => {
+  if (!token || token === "ALL") return null;
+  return assets.find((asset) => asset.asset_uuid === token || asset.asset_id === token) ?? null;
+};
 
 const formatFallback = (value?: string | null): string => {
   const next = normalize(value);
@@ -354,45 +397,157 @@ async function loadAssetPortalRows(asset: AssetRecord): Promise<PortalDocumentRo
 }
 
 export function DocumentPortalPage() {
+  const { hasPermission, hasAnyPermission } = useAuth();
+  const canCreateDocument = hasAnyPermission(["DOCUMENT_LINK", "DOCUMENT_UPLOAD"]);
+  const canUpdateDocument = hasPermission("DOCUMENT_UPDATE");
+  const canDeleteDocument = hasPermission("DOCUMENT_DELETE");
   const header = getPageHeaderConfig("document-portal");
+  const [assets, setAssets] = useState<AssetRecord[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierRecord[]>([]);
   const [rows, setRows] = useState<PortalDocumentRow[]>([]);
   const [sourceSystemOptions, setSourceSystemOptions] = useState<LookupOption[]>([]);
+  const [releaseOptions, setReleaseOptions] = useState<ReleaseRecord[]>([]);
+  const [linkedDocuments, setLinkedDocuments] = useState<DocumentLinkRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [assetFilter, setAssetFilter] = useState(getInitialAssetFilter);
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [kindFilter, setKindFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
   const [selectedDocument, setSelectedDocument] = useState<AuthoredDocumentRecord | null>(null);
+  const [createDocumentOpen, setCreateDocumentOpen] = useState(false);
+  const [editDocumentId, setEditDocumentId] = useState<string | null>(null);
+  const [linkedDocumentsOpen, setLinkedDocumentsOpen] = useState(true);
+  const [documentToDelete, setDocumentToDelete] = useState<DocumentLinkRecord | null>(null);
+  const [deleteDocumentDialogOpen, setDeleteDocumentDialogOpen] = useState(false);
+  const [deletingDocument, setDeletingDocument] = useState(false);
 
   const loadPortal = useCallback(async () => {
     setLoading(true);
     try {
-      const [assets, options] = await Promise.all([getAssets(), loadOmsSourceSystemOptions()]);
+      const [assets, supplierData, options] = await Promise.all([getAssets(), getSuppliers(), loadOmsSourceSystemOptions()]);
       const portalRows = await Promise.all(assets.map(loadAssetPortalRows));
+      setAssets(assets);
+      setSuppliers(supplierData);
       setRows(portalRows.flat().sort(comparePortalRows));
       setSourceSystemOptions(options);
+      const initialAsset = findAssetByToken(assets, assetFilter);
+      if (initialAsset && initialAsset.asset_uuid !== assetFilter) {
+        setAssetFilter(initialAsset.asset_uuid);
+        updateAssetQueryParam(initialAsset.asset_uuid);
+      }
     } catch (error) {
       console.error("Failed to load document portal:", error);
       toast.error("Failed to load document portal");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [assetFilter]);
 
   useEffect(() => {
     void loadPortal();
   }, [loadPortal]);
 
+  const selectedAsset = useMemo(() => findAssetByToken(assets, assetFilter), [assetFilter, assets]);
+
+  const assetDocumentContext: DocumentLinkContext = useMemo(
+    () => ({
+      type: "asset",
+      assetId: selectedAsset?.asset_uuid ?? null,
+      assetName: selectedAsset?.asset_name ?? null,
+      assetCode: selectedAsset?.asset_id ?? null,
+      assetVersion: selectedAsset?.asset_version ?? null,
+    }),
+    [selectedAsset],
+  );
+
+  const authoredDocumentContext = useMemo(
+    () => ({
+      type: "asset" as const,
+      assetId: selectedAsset?.asset_uuid ?? null,
+      assetName: selectedAsset?.asset_name ?? null,
+      assetCode: selectedAsset?.asset_id ?? null,
+      assetVersion: selectedAsset?.asset_version ?? null,
+    }),
+    [selectedAsset],
+  );
+
+  const qualificationDocumentContext = useMemo(
+    () => ({
+      type: "asset" as const,
+      assetId: selectedAsset?.asset_uuid ?? null,
+      assetName: selectedAsset?.asset_name ?? null,
+      assetCode: selectedAsset?.asset_id ?? null,
+      assetVersion: selectedAsset?.asset_version ?? null,
+    }),
+    [selectedAsset],
+  );
+
+  const loadWorkspace = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (!selectedAsset?.asset_uuid) {
+      setLinkedDocuments([]);
+      setReleaseOptions([]);
+      setWorkspaceLoading(false);
+      return;
+    }
+
+    if (!options.silent) setWorkspaceLoading(true);
+    try {
+      const [documents, releases] = await Promise.all([
+        getAssetDocuments(selectedAsset.asset_uuid),
+        getReleasesByAssetId(selectedAsset.asset_uuid),
+      ]);
+      setLinkedDocuments(documents);
+      setReleaseOptions(releases);
+    } catch (error) {
+      if (options.silent) {
+        console.error("Failed to refresh document portal workspace:", error);
+      } else {
+        const mapped = mapDocumentLinkAxiosError(error);
+        toast.error(mapped.message);
+      }
+    } finally {
+      if (!options.silent) setWorkspaceLoading(false);
+    }
+  }, [selectedAsset?.asset_uuid]);
+
+  useEffect(() => {
+    void loadWorkspace();
+  }, [loadWorkspace]);
+
+  const hasActiveDocumentVectorization = useMemo(
+    () => linkedDocuments.some(isDocumentVectorizationActive),
+    [linkedDocuments],
+  );
+
+  useEffect(() => {
+    if (!selectedAsset?.asset_uuid || !hasActiveDocumentVectorization) return;
+
+    const intervalId = window.setInterval(() => {
+      void loadWorkspace({ silent: true });
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasActiveDocumentVectorization, loadWorkspace, selectedAsset?.asset_uuid]);
+
   const documentTypes = useMemo(
     () => Array.from(new Set(rows.map((row) => row.documentType).filter(Boolean))).sort(),
+    [rows],
+  );
+  const statusTypes = useMemo(
+    () => Array.from(new Set(rows.map((row) => getStatusLabel(row)).filter(Boolean))).sort(),
     [rows],
   );
 
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     return rows.filter((row) => {
+      const matchesAsset = assetFilter === "ALL" || row.assetUuid === assetFilter || row.assetCode === assetFilter;
       const matchesType = typeFilter === "ALL" || row.documentType === typeFilter;
       const matchesKind = kindFilter === "ALL" || row.kind === kindFilter;
-      if (!matchesType || !matchesKind) return false;
+      const matchesStatus = statusFilter === "ALL" || getStatusLabel(row) === statusFilter;
+      if (!matchesAsset || !matchesType || !matchesKind || !matchesStatus) return false;
       if (!query) return true;
 
       return [
@@ -411,13 +566,13 @@ export function DocumentPortalPage() {
         .map((value) => normalize(value).toLowerCase())
         .some((value) => value.includes(query));
     });
-  }, [kindFilter, rows, search, typeFilter]);
+  }, [assetFilter, kindFilter, rows, search, statusFilter, typeFilter]);
 
   const headerStats = buildPageHeaderStats(header.stats, {
-    documents: rows.length,
-    assets: new Set(rows.map((row) => row.assetUuid)).size,
-    authored: rows.filter((row) => row.kind === "AUTHORED").length,
-    qualification: rows.filter((row) => row.kind === "QUALIFICATION").length,
+    documents: filteredRows.length,
+    assets: new Set(filteredRows.map((row) => row.assetUuid)).size,
+    authored: filteredRows.filter((row) => row.kind === "AUTHORED").length,
+    qualification: filteredRows.filter((row) => row.kind === "QUALIFICATION").length,
   });
 
   const authoredViewerDescription = selectedDocument
@@ -427,6 +582,46 @@ export function DocumentPortalPage() {
         selectedDocument.release_version ? `Release ${selectedDocument.release_version}` : null,
       ].filter(Boolean).join(" | ")
     : "";
+
+  const handleAssetFilterChange = (value: string) => {
+    setAssetFilter(value);
+    updateAssetQueryParam(value);
+  };
+
+  const handleDeleteDocumentClick = (document: DocumentLinkRecord) => {
+    if (!canDeleteDocument) return;
+    setDocumentToDelete(document);
+    setDeleteDocumentDialogOpen(true);
+  };
+
+  const handleConfirmDeleteDocument = async () => {
+    if (!documentToDelete || !canDeleteDocument) return;
+
+    setDeletingDocument(true);
+    try {
+      await deleteDocumentLink(documentToDelete.document_link_id);
+      toast.success("Document link deleted successfully");
+      await Promise.all([loadWorkspace(), loadPortal()]);
+    } catch (error) {
+      const mapped = mapDocumentLinkAxiosError(error);
+      toast.error(mapped.message);
+    } finally {
+      setDeletingDocument(false);
+      setDeleteDocumentDialogOpen(false);
+      setDocumentToDelete(null);
+    }
+  };
+
+  const handleReprocessDocument = async (document: DocumentLinkRecord) => {
+    try {
+      await reprocessDocumentVectorization(document.document_link_id);
+      toast.success("Document vectorization queued");
+      await loadWorkspace({ silent: true });
+    } catch (error) {
+      const mapped = mapDocumentLinkAxiosError(error);
+      toast.error(mapped.message);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -466,6 +661,22 @@ export function DocumentPortalPage() {
 
           <div className="flex flex-wrap gap-2">
             <label className="space-y-1 text-xs font-medium text-slate-600">
+              <span>Asset</span>
+              <select
+                value={assetFilter}
+                onChange={(event) => handleAssetFilterChange(event.target.value)}
+                className="h-9 min-w-52 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                disabled={loading}
+              >
+                <option value="ALL">All assets</option>
+                {assets.map((asset) => (
+                  <option key={asset.asset_uuid} value={asset.asset_uuid}>
+                    {asset.asset_id} | {asset.asset_name || "Unnamed asset"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs font-medium text-slate-600">
               <span>Document Type</span>
               <select
                 value={typeFilter}
@@ -491,6 +702,20 @@ export function DocumentPortalPage() {
                 <option value="AUTHORED">Authored</option>
                 <option value="QUALIFICATION">Qualification</option>
                 <option value="LINKED">Linked</option>
+              </select>
+            </label>
+            <label className="space-y-1 text-xs font-medium text-slate-600">
+              <span>Status</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className="h-9 min-w-40 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                disabled={loading}
+              >
+                <option value="ALL">All statuses</option>
+                {statusTypes.map((status) => (
+                  <option key={status} value={status}>{status}</option>
+                ))}
               </select>
             </label>
           </div>
@@ -599,6 +824,102 @@ export function DocumentPortalPage() {
         </div>
       </section>
 
+      {selectedAsset ? (
+        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Asset Document Workspace</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {selectedAsset.asset_name || "Unnamed asset"} | {selectedAsset.asset_id || selectedAsset.asset_uuid}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <p className="text-xs text-slate-500">Catalog Docs</p>
+                <p className="mt-1 font-semibold text-slate-900">{rows.filter((row) => row.assetUuid === selectedAsset.asset_uuid).length}</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <p className="text-xs text-slate-500">Linked</p>
+                <p className="mt-1 font-semibold text-slate-900">{linkedDocuments.length}</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <p className="text-xs text-slate-500">Releases</p>
+                <p className="mt-1 font-semibold text-slate-900">{releaseOptions.length}</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <p className="text-xs text-slate-500">Asset Version</p>
+                <p className="mt-1 font-semibold text-slate-900">{selectedAsset.asset_version || "-"}</p>
+              </div>
+            </div>
+          </div>
+
+          <AuthoredDocumentPanel
+            enabled={Boolean(selectedAsset.asset_uuid)}
+            context={authoredDocumentContext}
+            title="Authored Documents"
+            emptyMessage="No authored documents created for this asset yet. Start with a URS draft."
+          />
+
+          <QualificationDocumentPanel
+            enabled={Boolean(selectedAsset.asset_uuid)}
+            context={qualificationDocumentContext}
+            suppliers={suppliers}
+            releaseOptions={releaseOptions}
+            sourceSystemOptions={sourceSystemOptions}
+            title="Qualification Documents"
+            emptyMessage="No qualification documents linked for this asset yet."
+          />
+
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Linked Documents</p>
+                <p className="mt-1 text-xs text-slate-500">Validated source mappings attached directly to this asset.</p>
+              </div>
+
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-expanded={linkedDocumentsOpen}
+                  onClick={() => setLinkedDocumentsOpen((previous) => !previous)}
+                  disabled={!selectedAsset.asset_uuid}
+                >
+                  {linkedDocumentsOpen ? "Hide Docs" : "View Docs"}
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-700">
+                    {linkedDocuments.length}
+                  </span>
+                </Button>
+
+                {canCreateDocument ? (
+                  <Button type="button" size="sm" onClick={() => setCreateDocumentOpen(true)} disabled={!selectedAsset.asset_uuid}>
+                    Add Document
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+
+            {linkedDocumentsOpen ? (
+              <AssetDocumentTable
+                documents={linkedDocuments}
+                loading={workspaceLoading}
+                onEdit={(document) => setEditDocumentId(document.document_link_id)}
+                onDelete={handleDeleteDocumentClick}
+                onReprocess={(document) => void handleReprocessDocument(document)}
+                canUpdate={canUpdateDocument}
+                canDelete={canDeleteDocument}
+                sourceSystemOptions={sourceSystemOptions}
+              />
+            ) : null}
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+          Select an asset to open the document authoring, linked document, qualification, approval, publishing, and versioning workspace.
+        </section>
+      )}
+
       <Dialog open={Boolean(selectedDocument)} onOpenChange={(open) => !open && setSelectedDocument(null)}>
         <DialogContent className="max-h-[86vh] max-w-4xl overflow-hidden p-0">
           <DialogHeader className="border-b border-slate-200 bg-slate-50 px-5 py-4">
@@ -612,6 +933,58 @@ export function DocumentPortalPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {canCreateDocument ? (
+        <CreateDocumentLinkModal
+          open={Boolean(selectedAsset) && createDocumentOpen}
+          context={assetDocumentContext}
+          sourceSystemOptions={sourceSystemOptions}
+          onClose={() => setCreateDocumentOpen(false)}
+          onCreated={async () => {
+            await Promise.all([loadWorkspace(), loadPortal()]);
+            setCreateDocumentOpen(false);
+          }}
+        />
+      ) : null}
+
+      {canUpdateDocument ? (
+        <EditDocumentLinkModal
+          open={Boolean(selectedAsset) && Boolean(editDocumentId)}
+          documentLinkId={editDocumentId}
+          context={assetDocumentContext}
+          sourceSystemOptions={sourceSystemOptions}
+          onClose={() => setEditDocumentId(null)}
+          onUpdated={async () => {
+            await Promise.all([loadWorkspace(), loadPortal()]);
+            setEditDocumentId(null);
+          }}
+        />
+      ) : null}
+
+      <AlertDialog open={deleteDocumentDialogOpen} onOpenChange={setDeleteDocumentDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Document Link</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete document "{documentToDelete?.document_name}" from this asset?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingDocument}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void handleConfirmDeleteDocument();
+              }}
+              disabled={deletingDocument}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {deletingDocument ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Toaster position="top-right" richColors />
     </div>

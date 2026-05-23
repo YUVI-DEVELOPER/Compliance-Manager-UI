@@ -9,8 +9,11 @@ export type NavPage =
   | "asset"
   | "asset-grouping"
   | "asset-specs"
+  | "asset-releases"
+  | "supplier-evaluations"
   | "periodic-review"
   | "document-portal"
+  | "document-intelligence"
   | "lookup-master"
   | "lookup-values"
   | "data-entry"
@@ -48,6 +51,14 @@ export const PAGE_ACCESS_RULES: Partial<Record<NavPage, PageAccessRule>> = {
     page: "asset-specs",
     requiredAnyPermissions: ["ASSET_VIEW"],
   },
+  "asset-releases": {
+    page: "asset-releases",
+    requiredAnyPermissions: ["ASSET_VIEW"],
+  },
+  "supplier-evaluations": {
+    page: "supplier-evaluations",
+    requiredAnyPermissions: ["ASSET_VIEW", "SUPPLIER_VIEW"],
+  },
   "user-management": {
     page: "user-management",
     requiredAnyPermissions: ["USER_VIEW", "USER_CREATE", "USER_UPDATE", "USER_DELETE", "USER_ASSIGN_ROLE"],
@@ -81,6 +92,10 @@ export const PAGE_ACCESS_RULES: Partial<Record<NavPage, PageAccessRule>> = {
     page: "document-portal",
     requiredAnyPermissions: ["DOCUMENT_VIEW"],
   },
+  "document-intelligence": {
+    page: "document-intelligence",
+    requiredAnyPermissions: ["DOCUMENT_VIEW"],
+  },
   reports: {
     page: "reports",
     requiredAnyPermissions: ["REPORT_EXPORT"],
@@ -98,16 +113,19 @@ export const NAV_PAGE_ORDER: readonly NavPage[] = [
   "supplier",
   "asset-grouping",
   "asset-specs",
+  "asset-releases",
+  "supplier-evaluations",
+  "document-portal",
+  "document-intelligence",
+  "periodic-review",
+  "reports",
+  "infrastructure-graph",
   "user-management",
   "role-management",
   "permission-management",
   "audit-log",
   "lookup-master",
   "lookup-values",
-  "periodic-review",
-  "document-portal",
-  "reports",
-  "infrastructure-graph",
 ];
 
 type PermissionChecker = (codes: string[]) => boolean;

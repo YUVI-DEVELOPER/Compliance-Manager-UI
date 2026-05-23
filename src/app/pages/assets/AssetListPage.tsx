@@ -45,9 +45,10 @@ import { downloadCsv } from "../../components/importExport/csv";
 import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../../components/layout/CommonPageHeader";
 import { buildPageHeaderStats, getPageHeaderConfig } from "../../components/layout/pageHeaderConfig";
 import { useAuth } from "../../auth/useAuth";
+import type { NavPage } from "../../auth/accessPolicy";
 
 interface AssetListPageProps {
-  onNavigate?: (page: string) => void;
+  onNavigate?: (page: NavPage) => void;
 }
 
 const PAGE_SIZE = 10;
@@ -249,10 +250,6 @@ export function AssetListPage({ onNavigate }: AssetListPageProps) {
   // Handle view
   const handleView = (asset: AssetRecord) => {
     openAssetDrawer(asset, "overview");
-  };
-
-  const handleManageReleases = (asset: AssetRecord) => {
-    openAssetDrawer(asset, "releases");
   };
 
   // Handle delete
