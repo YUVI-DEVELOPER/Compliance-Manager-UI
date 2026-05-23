@@ -8,6 +8,7 @@ import { useAuth } from "./auth/useAuth";
 import { AppShell } from "./components/layout/AppShell";
 import { getPageHeaderConfig } from "./components/layout/pageHeaderConfig";
 import { LoginPage } from "./pages/LoginPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { OrgStructurePage } from "./pages/OrgStructurePage";
 import { PermissionManagementPage } from "./pages/PermissionManagementPage";
 import { RoleManagementPage } from "./pages/RoleManagementPage";
@@ -28,7 +29,7 @@ function isNavPage(value: string): value is NavPage {
 }
 
 function AppContent() {
-  const { hasAnyPermission, initializing, isAuthenticated } = useAuth();
+  const { hasAnyPermission, hasRole, initializing, isAuthenticated } = useAuth();
   const [page, setPage] = useState<NavPage>(() => {
     const savedPage = localStorage.getItem("app_current_page");
     if (savedPage === "dashboard") return DEFAULT_NAV_PAGE;
@@ -41,21 +42,21 @@ function AppContent() {
       setPage("login");
       return;
     }
-    if (page === "login" || !canAccessNavPage(page, hasAnyPermission)) {
-      setPage(getFirstAllowedPage(hasAnyPermission));
+    if (page === "login" || !canAccessNavPage(page, hasAnyPermission, hasRole)) {
+      setPage(getFirstAllowedPage(hasAnyPermission, hasRole));
     }
-  }, [hasAnyPermission, initializing, isAuthenticated, page]);
+  }, [hasAnyPermission, hasRole, initializing, isAuthenticated, page]);
 
   useEffect(() => {
     localStorage.setItem("app_current_page", page);
   }, [page]);
 
   const navigate = (nextPage: NavPage) => {
-    if (nextPage === "login" || canAccessNavPage(nextPage, hasAnyPermission)) {
+    if (nextPage === "login" || canAccessNavPage(nextPage, hasAnyPermission, hasRole)) {
       setPage(nextPage);
       return;
     }
-    setPage(getFirstAllowedPage(hasAnyPermission));
+    setPage(getFirstAllowedPage(hasAnyPermission, hasRole));
   };
 
   if (initializing) {
@@ -63,13 +64,13 @@ function AppContent() {
   }
 
   if (!isAuthenticated || page === "login") {
-    if (isAuthenticated && getFirstAllowedPage(hasAnyPermission) === "login") {
+    if (isAuthenticated && getFirstAllowedPage(hasAnyPermission, hasRole) === "login") {
       return <AccessDeniedPage />;
     }
     return <LoginPage onLogin={(nextPage) => navigate(nextPage)} />;
   }
 
-  if (!canAccessNavPage(page, hasAnyPermission)) {
+  if (!canAccessNavPage(page, hasAnyPermission, hasRole)) {
     return <AccessDeniedPage />;
   }
 
@@ -78,6 +79,7 @@ function AppContent() {
       {page === "user-management" && <UserManagementPage />}
       {page === "role-management" && <RoleManagementPage />}
       {page === "permission-management" && <PermissionManagementPage />}
+      {page === "audit-log" && <AuditLogPage />}
       {page === "org-structure" && <OrgStructurePage />}
       {page === "supplier" && <SupplierPage />}
       {page === "asset" && <AssetListPage />}
