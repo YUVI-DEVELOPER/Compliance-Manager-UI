@@ -26,6 +26,7 @@ import { DocumentIntelligencePage } from "./pages/assets/DocumentIntelligencePag
 import { DocumentPortalPage } from "./pages/assets/DocumentPortalPage";
 import { SupplierEvaluationsPage } from "./pages/assets/SupplierEvaluationsPage";
 import { GraphHierarchyPage } from "./pages/graph/GraphHierarchyPage";
+import { MODULE_NAVIGATION_EVENT } from "./utils/moduleNavigation";
 
 function isNavPage(value: string): value is NavPage {
   return Boolean(getPageHeaderConfig(value as NavPage));
@@ -36,6 +37,7 @@ const ROUTE_TO_PAGE: Record<string, NavPage> = {
   "/login": "login",
   "/org-structure": "org-structure",
   "/supplier": "supplier",
+  "/suppliers": "supplier",
   "/asset": "asset",
   "/assets": "asset",
   "/asset-master": "asset",
@@ -50,9 +52,13 @@ const ROUTE_TO_PAGE: Record<string, NavPage> = {
   "/asset-inventory-report": "reports",
   "/reports": "reports",
   "/infrastructure-graph": "infrastructure-graph",
+  "/users": "user-management",
   "/user-management": "user-management",
+  "/roles": "role-management",
   "/role-management": "role-management",
+  "/permissions": "permission-management",
   "/permission-management": "permission-management",
+  "/audit-log": "audit-log",
   "/lookup-master": "lookup-master",
   "/lookup-values": "lookup-values",
 };
@@ -74,6 +80,7 @@ const PAGE_TO_ROUTE: Partial<Record<NavPage, string>> = {
   "user-management": "/user-management",
   "role-management": "/role-management",
   "permission-management": "/permission-management",
+  "audit-log": "/audit-log",
   "lookup-master": "/lookup-master",
   "lookup-values": "/lookup-values",
 };
@@ -98,13 +105,17 @@ function AppContent() {
   });
 
   useEffect(() => {
-    const handlePopState = () => {
+    const syncPageFromLocation = () => {
       const routePage = pageFromLocation();
       if (routePage) setPage(routePage);
     };
 
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
+    window.addEventListener("popstate", syncPageFromLocation);
+    window.addEventListener(MODULE_NAVIGATION_EVENT, syncPageFromLocation);
+    return () => {
+      window.removeEventListener("popstate", syncPageFromLocation);
+      window.removeEventListener(MODULE_NAVIGATION_EVENT, syncPageFromLocation);
+    };
   }, []);
 
   useEffect(() => {

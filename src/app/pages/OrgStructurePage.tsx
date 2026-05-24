@@ -5,10 +5,11 @@ import { OrgHierarchyWorkspace } from "../components/org/OrgHierarchyWorkspace";
 import { OrgRoleCatalogAdmin } from "../components/org/OrgRoleCatalogAdmin";
 import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../components/layout/CommonPageHeader";
 import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
+import { useCurrentActor } from "../auth/useCurrentActor";
 
 type OrgWorkspaceTab = "structure" | "roleCatalog";
 
-const DEFAULT_USER = "admin@validatenow";
+const DEFAULT_USER = "admin@validatenow"; // TODO: Replace hardcoded actor during module redesign.
 
 interface OrgHeaderControls {
   refresh: () => void;
@@ -19,6 +20,7 @@ interface OrgHeaderControls {
 }
 
 export function OrgStructurePage() {
+  const currentActor = useCurrentActor();
   const header = getPageHeaderConfig("org-structure");
   const [activeTab, setActiveTab] = useState<OrgWorkspaceTab>("structure");
   const [headerControls, setHeaderControls] = useState<OrgHeaderControls | null>(null);
@@ -72,6 +74,7 @@ export function OrgStructurePage() {
     },
   ];
   const headerStats = activeTab === "structure" ? organizationHeaderStats : governanceHeaderStats;
+  const defaultUser = currentActor.auditName ?? DEFAULT_USER;
 
   return (
     <div className={PAGE_LAYOUT_SHELL_CLASS}>
@@ -124,7 +127,7 @@ export function OrgStructurePage() {
       <div className={PAGE_CONTENT_CLASS}>
         {activeTab === "structure" ? (
           <OrgHierarchyWorkspace
-            defaultUser={DEFAULT_USER}
+            defaultUser={defaultUser}
             onSummaryChange={setSummary}
             onHeaderControlsChange={setHeaderControls}
             searchInput={orgSearch}
@@ -132,7 +135,7 @@ export function OrgStructurePage() {
             showSearchCard={false}
           />
         ) : (
-          <OrgRoleCatalogAdmin defaultUser={DEFAULT_USER} onCatalogSummaryChange={setCatalogSummary} />
+          <OrgRoleCatalogAdmin defaultUser={defaultUser} onCatalogSummaryChange={setCatalogSummary} />
         )}
       </div>
     </div>

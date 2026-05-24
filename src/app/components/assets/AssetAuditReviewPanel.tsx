@@ -869,7 +869,7 @@ function AuditReviewSchedulePanel({
   onViewReport: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const latestRun = runs[0] ?? lastResult?.run ?? null;
+  const latestRun = runs.find((run) => !isInProgressDuplicateRun(run)) ?? lastResult?.run ?? runs[0] ?? null;
   const resultJobId = lastResult?.job?.job_id || lastResult?.run.job_id || null;
   const resultReportId = lastResult?.report?.report_id || lastResult?.job?.latest_report_id || null;
   const isBusy = saving || running;
@@ -917,6 +917,9 @@ function AuditReviewSchedulePanel({
 }
 
 const shortIdentifier = (value?: string | null): string => (value ? `${value.slice(0, 8)}...` : "Not saved");
+
+const isInProgressDuplicateRun = (run: AuditReviewScheduleRun): boolean =>
+  run.status === "SKIPPED" && (run.message || "").includes("Another scheduler run is already in progress");
 
 const formatScheduleRunStatus = (status?: string | null): string => {
   if (!status) return "Never Run";

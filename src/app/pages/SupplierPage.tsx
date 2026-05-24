@@ -36,6 +36,7 @@ import { SupplierDetailDrawer } from "../components/suppliers/SupplierDetailDraw
 import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../components/layout/CommonPageHeader";
 import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
 import { useAuth } from "../auth/useAuth";
+import { useCurrentActor } from "../auth/useCurrentActor";
 
 interface FieldErrors {
   [key: string]: string;
@@ -58,7 +59,7 @@ interface SupplierFormState {
 
 type SupplierFormMode = "add" | "edit";
 
-const CURRENT_USER_ID = "00000000-0000-0000-0000-000000000001";
+const CURRENT_USER_ID = "00000000-0000-0000-0000-000000000001"; // TODO: Replace hardcoded actor during module redesign.
 const PAGE_SIZE = 10;
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -127,9 +128,9 @@ const normalizeOptional = (value: string): string | undefined => {
   return trimmed.length ? trimmed : undefined;
 };
 
-const buildCreatePayload = (form: SupplierFormState): CreateSupplierPayload => ({
+const buildCreatePayload = (form: SupplierFormState, actorId: string): CreateSupplierPayload => ({
   supplier_name: form.supplier_name.trim(),
-  created_by: CURRENT_USER_ID,
+  created_by: actorId,
   supplier_type: normalizeOptional(form.supplier_type),
   supplier_add1: normalizeOptional(form.supplier_add1),
   supplier_add2: normalizeOptional(form.supplier_add2),
@@ -142,7 +143,7 @@ const buildCreatePayload = (form: SupplierFormState): CreateSupplierPayload => (
   contact_phone: normalizeOptional(form.contact_phone),
 });
 
-const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormState): UpdateSupplierPayload => {
+const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormState, actorId: string): UpdateSupplierPayload => {
   const payload: UpdateSupplierPayload = {};
   const keys = Object.keys(current) as (keyof SupplierFormState)[];
 
@@ -158,7 +159,7 @@ const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormSta
   });
 
   if (Object.keys(payload).length > 0) {
-    payload.modified_by = CURRENT_USER_ID;
+    payload.modified_by = actorId;
   }
 
   return payload;
@@ -166,6 +167,7 @@ const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormSta
 
 export function SupplierPage() {
   const { hasPermission } = useAuth();
+  const currentActor = useCurrentActor();
   const canCreateSupplier = hasPermission("SUPPLIER_CREATE");
   const canUpdateSupplier = hasPermission("SUPPLIER_UPDATE");
   const canDeleteSupplier = hasPermission("SUPPLIER_DELETE");
@@ -211,6 +213,7 @@ const [showDelete, setShowDelete] = useState(false);
     const start = (page - 1) * PAGE_SIZE;
     return suppliers.slice(start, start + PAGE_SIZE);
   }, [page, suppliers]);
+  const currentActorId = currentActor.id ?? CURRENT_USER_ID;
 
   const reloadSuppliers = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -420,14 +423,14 @@ const openEdit = async (supplierId: string) => {
     setSubmitting(true);
     try {
       if (formMode === "add") {
-        await createSupplier(buildCreatePayload(formData));
+        await createSupplier(buildCreatePayload(formData, currentActorId));
         toast.success("Supplier created successfully");
       } else {
         if (!selectedSupplierId) {
           toast.error("Missing supplier id");
           return;
         }
-        const payload = buildUpdatePayload(initialFormData, formData);
+        const payload = buildUpdatePayload(initialFormData, formData, currentActorId);
         if (Object.keys(payload).length === 0) {
           toast.message("No changes to save");
         } else {
@@ -901,7 +904,7 @@ const openEdit = async (supplierId: string) => {
             errors: [],
             payload: {
               supplier_name: supplierName,
-              created_by: CURRENT_USER_ID,
+              created_by: currentActorId,
               supplier_type: optionalCsv(row["Type"]),
               supplier_city: optionalCsv(row["City"]),
               supplier_state: optionalCsv(row["State"]),

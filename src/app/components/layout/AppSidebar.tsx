@@ -5,14 +5,20 @@ import {
   Building2,
   ClipboardCheck,
   ClipboardList,
-  FileText,
+  Database,
+  FolderOpen,
   GitBranch,
   KeyRound,
+  ListChecks,
+  ListOrdered,
   LogOut,
+  Network,
   PackageCheck,
-  Settings,
+  RefreshCcw,
   ShieldCheck,
-  Users,
+  SlidersHorizontal,
+  Truck,
+  UserCog,
 } from "lucide-react";
 
 import { canAccessRule, PAGE_ACCESS_RULES } from "../../auth/accessPolicy";
@@ -30,32 +36,45 @@ interface NavItem {
 }
 
 const iconClass = "h-4.5 w-4.5";
-
-const navItems: NavItem[] = [
-  { key: "org-structure", label: "Org Structure", group: "Management", icon: <Building2 className={iconClass} /> },
-  { key: "supplier", label: "Supplier", group: "Management", icon: <Users className={iconClass} /> },
-  { key: "asset-specs", label: "Asset Specs", group: "Management", icon: <FileText className={iconClass} /> },
-  { key: "asset", label: "Asset", group: "Management", icon: <Settings className={iconClass} /> },
-  { key: "asset-grouping", label: "Asset Grouping", group: "Management", icon: <GitBranch className={iconClass} /> },
-  { key: "asset", label: "Asset Master", group: "Management", icon: <Settings className={iconClass} /> },
-  { key: "asset-grouping", label: "Asset Grouping", group: "Management", icon: <GitBranch className={iconClass} /> },
-  { key: "asset-specs", label: "Asset Specs", group: "Management", icon: <FileText className={iconClass} /> },
-  { key: "asset-releases", label: "Asset Releases", group: "Operations", icon: <PackageCheck className={iconClass} /> },
-  { key: "supplier-evaluations", label: "Supplier Evaluations", group: "Operations", icon: <ClipboardCheck className={iconClass} /> },
-  { key: "document-portal", label: "Document Portal", group: "Operations", icon: <FileText className={iconClass} /> },
-  { key: "document-intelligence", label: "Document Intelligence", group: "Intelligence", icon: <Bot className={iconClass} /> },
-  { key: "periodic-review", label: "Periodic Review", group: "Intelligence", icon: <ShieldCheck className={iconClass} /> },
-  { key: "reports", label: "Asset Inventory Report", group: "Intelligence", icon: <BarChart3 className={iconClass} /> },
-  { key: "infrastructure-graph", label: "Infrastructure Graph", group: "Intelligence", icon: <GitBranch className={iconClass} /> },
-  { key: "user-management", label: "User Management", group: "Configuration", icon: <Users className={iconClass} /> },
-  { key: "role-management", label: "Role Management", group: "Configuration", icon: <ShieldCheck className={iconClass} /> },
-  { key: "permission-management", label: "Permissions", group: "Configuration", icon: <KeyRound className={iconClass} /> },
-  { key: "audit-log", label: "Audit Log", group: "Configuration", icon: <ClipboardList className={iconClass} /> },
-  { key: "lookup-master", label: "Lookup Master", group: "Configuration", icon: <Settings className={iconClass} /> },
-  { key: "lookup-values", label: "Lookup Values", group: "Configuration", icon: <KeyRound className={iconClass} /> },
+const administrationPermissions = [
+  "USER_VIEW",
+  "USER_CREATE",
+  "USER_UPDATE",
+  "USER_DELETE",
+  "USER_ASSIGN_ROLE",
+  "ROLE_VIEW",
+  "ROLE_CREATE",
+  "ROLE_UPDATE",
+  "ROLE_DELETE",
+  "ROLE_ASSIGN_PERMISSION",
+  "AUDIT_LOG_VIEW",
+  "AUDIT_LOG_EXPORT",
+  "LOOKUP_VIEW",
+  "LOOKUP_MANAGE",
 ];
 
-const groups = ["Management", "Operations", "Intelligence", "Configuration"];
+const navItems: NavItem[] = [
+  { key: "asset", label: "Asset Master", group: "Asset Management", icon: <Database className={iconClass} /> },
+  { key: "asset-grouping", label: "Asset Grouping", group: "Asset Management", icon: <GitBranch className={iconClass} /> },
+  { key: "asset-specs", label: "Asset Specs", group: "Asset Management", icon: <ListChecks className={iconClass} /> },
+  { key: "asset-releases", label: "Asset Releases", group: "Asset Management", icon: <PackageCheck className={iconClass} /> },
+  { key: "org-structure", label: "Org Structure", group: "Organization", icon: <Building2 className={iconClass} /> },
+  { key: "supplier", label: "Suppliers", group: "Organization", icon: <Truck className={iconClass} /> },
+  { key: "supplier-evaluations", label: "Supplier Evaluations", group: "Organization", icon: <ClipboardCheck className={iconClass} /> },
+  { key: "document-portal", label: "Document Portal", group: "Compliance", icon: <FolderOpen className={iconClass} /> },
+  { key: "periodic-review", label: "Periodic Review", group: "Compliance", icon: <RefreshCcw className={iconClass} /> },
+  { key: "document-intelligence", label: "Document Intelligence", group: "Analytics", icon: <Bot className={iconClass} /> },
+  { key: "reports", label: "Asset Inventory Report", group: "Analytics", icon: <BarChart3 className={iconClass} /> },
+  { key: "infrastructure-graph", label: "Infrastructure Graph", group: "Analytics", icon: <Network className={iconClass} /> },
+  { key: "user-management", label: "User Management", group: "Administration", icon: <UserCog className={iconClass} /> },
+  { key: "role-management", label: "Role Management", group: "Administration", icon: <ShieldCheck className={iconClass} /> },
+  { key: "permission-management", label: "Permissions", group: "Administration", icon: <KeyRound className={iconClass} /> },
+  { key: "audit-log", label: "Audit Log", group: "Administration", icon: <ClipboardList className={iconClass} /> },
+  { key: "lookup-master", label: "Lookup Master", group: "Administration", icon: <SlidersHorizontal className={iconClass} /> },
+  { key: "lookup-values", label: "Lookup Values", group: "Administration", icon: <ListOrdered className={iconClass} /> },
+];
+
+const groups = ["Asset Management", "Organization", "Compliance", "Analytics", "Administration"];
 
 interface AppSidebarProps {
   activePage: NavPage;
@@ -65,7 +84,9 @@ interface AppSidebarProps {
 export function AppSidebar({ activePage, onNavigate }: AppSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const { hasAnyPermission, hasRole, logout, user } = useAuth();
+  const canViewAdministration = hasRole("ADMIN") || hasAnyPermission(administrationPermissions);
   const visibleNavItems = navItems.filter((item) => {
+    if (item.group === "Administration" && !canViewAdministration) return false;
     const rule = PAGE_ACCESS_RULES[item.key];
     return rule ? canAccessRule(rule, hasAnyPermission, hasRole) : false;
   });
@@ -110,6 +131,9 @@ export function AppSidebar({ activePage, onNavigate }: AppSidebarProps) {
           if (groupItems.length === 0) return null;
           return (
             <div key={group} className="mb-1">
+              {group === "Administration" && (
+                <div className={collapsed ? "mx-3 my-2 border-t border-slate-700" : "mx-4 my-3 border-t border-slate-700"} />
+              )}
               {!collapsed && (
                 <div className="px-4 py-1.5">
                   <span className="text-slate-600 text-xs font-semibold uppercase tracking-widest">{group}</span>
