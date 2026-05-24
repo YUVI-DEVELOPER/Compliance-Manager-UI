@@ -23,7 +23,10 @@ interface AssetMasterFormFieldsProps {
   criticalities: LookupOption[];
   assetNatures: LookupOption[];
   currencies: LookupOption[];
+  assetSpecsLoading: boolean;
+  assetSpecsError?: string | null;
   onChange: (key: keyof AssetFormState, value: string) => void;
+  onAssetSpecValueChange: (assetSpecId: string, value: string) => void;
 }
 
 interface SelectFieldProps {
@@ -89,12 +92,86 @@ export function AssetMasterFormFields({
   criticalities,
   assetNatures,
   currencies,
+  assetSpecsLoading,
+  assetSpecsError,
   onChange,
+  onAssetSpecValueChange,
 }: AssetMasterFormFieldsProps) {
   const tagPreview = getTagPreview(formData.tags_input);
+  const assetSpecGroups = formData.asset_spec_values.reduce<Map<string, typeof formData.asset_spec_values>>((groups, item) => {
+    const existing = groups.get(item.parameter_grouping) ?? [];
+    existing.push(item);
+    groups.set(item.parameter_grouping, existing);
+    return groups;
+  }, new Map());
 
   return (
     <div className="space-y-5">
+      <SectionCard title="Asset Specifications">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <SelectField
+              label="Asset Sub-category"
+              value={formData.asset_sub_category}
+              placeholder="Select asset sub-category"
+              options={assetSubCategories}
+              error={fieldErrors.asset_sub_category}
+              onChange={(value) => onChange("asset_sub_category", value)}
+            />
+          </div>
+
+          {assetSpecsLoading ? (
+            <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              Loading asset specifications...
+            </div>
+          ) : assetSpecsError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {assetSpecsError}
+            </div>
+          ) : !formData.asset_sub_category ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+              Select the asset sub-category first to load the associated asset specifications.
+            </div>
+          ) : formData.asset_spec_values.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+              No active asset specifications are configured for this asset sub-category.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {Array.from(assetSpecGroups.entries()).map(([grouping, items]) => (
+                <div key={grouping} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                  <div>
+                    <h5 className="text-sm font-semibold text-slate-900">{grouping}</h5>
+                  </div>
+                  <div className="space-y-3">
+                    {items.map((item) => (
+                      <div key={item.asset_spec_id} className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 lg:grid-cols-[1.1fr_1.2fr_1fr]">
+                        <div className="space-y-1">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Parameter Name</p>
+                          <p className="text-sm font-medium text-slate-900">{item.parameter_name}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Description</p>
+                          <p className="text-sm text-slate-700">{item.parameter_description?.trim() || "-"}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <Input
+                            label="Value"
+                            value={item.parameter_value}
+                            onChange={(event) => onAssetSpecValueChange(item.asset_spec_id, event.target.value)}
+                            maxLength={150}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
       <SectionCard title="Core Identification">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div className="space-y-1">
@@ -199,15 +276,6 @@ export function AssetMasterFormFields({
             options={assetCategories}
             error={fieldErrors.asset_category}
             onChange={(value) => onChange("asset_category", value)}
-          />
-
-          <SelectField
-            label="Asset Sub-category"
-            value={formData.asset_sub_category}
-            placeholder="Select asset sub-category"
-            options={assetSubCategories}
-            error={fieldErrors.asset_sub_category}
-            onChange={(value) => onChange("asset_sub_category", value)}
           />
 
           <SelectField

@@ -133,9 +133,9 @@ export const PAGE_HEADER_CONFIG: Record<NavPage, PageHeaderPreset> = {
     searchPlaceholder: "Search by asset ID, name, owner, or tracking identifier...",
     primaryAction: { key: "create-asset", label: "Create Asset Master", variant: "default", icon: "plus" },
     secondaryActions: [
+      { key: "asset-specs", label: "Asset Specs", variant: "secondary", icon: "edit" },
       { key: "import", label: "Import", variant: "secondary", icon: "import" },
       { key: "export", label: "Export", variant: "secondary", icon: "export" },
-      { key: "asset-specs", label: "Asset Specs", variant: "secondary", icon: "edit" },
     ],
     searchEnabled: true,
     stats: [

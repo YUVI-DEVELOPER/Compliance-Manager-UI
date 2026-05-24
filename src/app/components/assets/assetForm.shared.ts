@@ -1,6 +1,7 @@
 import { OrgNode } from "../../../services/org.service";
-import { AssetRecord, CreateAssetPayload, UpdateAssetPayload } from "../../../services/asset.service";
-import { LookupOption } from "../../services/lookupValue.service";
+import { AssetRecord, AssetSpecValueRecord, CreateAssetPayload, UpdateAssetPayload } from "../../../services/asset.service";
+import { LookupOption, LookupValue } from "../../services/lookupValue.service";
+import { AssetSpecRecord } from "../../../services/asset-spec.service";
 
 export interface AssetFormState {
   org_node_id: string;
@@ -33,6 +34,7 @@ export interface AssetFormState {
   asset_value: string;
   asset_currency: string;
   asset_release_url: string;
+  asset_spec_values: AssetSpecValueRecord[];
 }
 
 export interface AssetFieldErrors {
@@ -75,6 +77,7 @@ export const EMPTY_ASSET_FORM: AssetFormState = {
   asset_value: "",
   asset_currency: "",
   asset_release_url: "",
+  asset_spec_values: [],
 };
 
 export const ALLOWED_ASSET_STATUS_CODES = [
@@ -161,6 +164,15 @@ const toComparablePayload = (form: AssetFormState): ComparableAssetPayload => ({
   asset_value: optionalNumber(form.asset_value),
   asset_currency: optionalString(form.asset_currency),
   asset_release_url: optionalString(form.asset_release_url),
+  asset_spec_values: form.asset_spec_values.length > 0
+    ? form.asset_spec_values.map((item) => ({
+      asset_spec_id: item.asset_spec_id,
+      parameter_grouping: item.parameter_grouping,
+      parameter_name: item.parameter_name,
+      parameter_description: item.parameter_description ?? null,
+      parameter_value: item.parameter_value.trim(),
+    }))
+    : null,
 });
 
 const toComparableUpdatePayload = (form: AssetFormState): UpdateComparableAsset => toComparablePayload(form);
@@ -230,6 +242,15 @@ export const assetToForm = (asset: AssetRecord): AssetFormState => ({
   asset_value: asset.asset_value === null || asset.asset_value === undefined ? "" : String(asset.asset_value),
   asset_currency: String(asset.asset_currency ?? ""),
   asset_release_url: String(asset.asset_release_url ?? ""),
+  asset_spec_values: Array.isArray(asset.asset_spec_values)
+    ? asset.asset_spec_values.map((item) => ({
+      asset_spec_id: String(item.asset_spec_id ?? ""),
+      parameter_grouping: String(item.parameter_grouping ?? ""),
+      parameter_name: String(item.parameter_name ?? ""),
+      parameter_description: item.parameter_description ?? null,
+      parameter_value: String(item.parameter_value ?? ""),
+    }))
+    : [],
 });
 
 export const validateAssetForm = (form: AssetFormState): AssetFieldErrors => {
@@ -319,4 +340,45 @@ export const buildOrgMap = (nodes: OrgNode[]): Map<string, OrgNode> => {
     (current.children ?? []).forEach((child) => stack.push(child));
   }
   return map;
+};
+
+const buildAssetSpecCompositeKey = (grouping: string, name: string): string =>
+  `${grouping.trim().toLowerCase()}::${name.trim().toLowerCase()}`;
+
+export const resolveAssetSubCategoryId = (
+  subCategories: LookupValue[],
+  subCategoryCode: string,
+): number | null => {
+  const normalized = subCategoryCode.trim().toUpperCase();
+  if (!normalized) return null;
+  const match = subCategories.find((item) => item.code.trim().toUpperCase() === normalized);
+  return match?.id ?? null;
+};
+
+export const mergeAssetSpecValues = (
+  specs: AssetSpecRecord[],
+  existingValues: AssetSpecValueRecord[] | null | undefined,
+): AssetSpecValueRecord[] => {
+  const existingById = new Map<string, AssetSpecValueRecord>();
+  const existingByKey = new Map<string, AssetSpecValueRecord>();
+
+  (existingValues ?? []).forEach((item) => {
+    if (item.asset_spec_id) {
+      existingById.set(item.asset_spec_id, item);
+    }
+    existingByKey.set(buildAssetSpecCompositeKey(item.parameter_grouping, item.parameter_name), item);
+  });
+
+  return specs.map((spec) => {
+    const existing = existingById.get(spec.asset_spec_id)
+      ?? existingByKey.get(buildAssetSpecCompositeKey(spec.parameter_grouping, spec.parameter_name));
+
+    return {
+      asset_spec_id: spec.asset_spec_id,
+      parameter_grouping: spec.parameter_grouping,
+      parameter_name: spec.parameter_name,
+      parameter_description: spec.guidelines ?? null,
+      parameter_value: existing?.parameter_value ?? spec.parameter_value,
+    };
+  });
 };

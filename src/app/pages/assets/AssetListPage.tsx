@@ -359,21 +359,21 @@ export function AssetListPage({ onNavigate }: AssetListPageProps) {
         stats={headerStats}
         primaryAction={header.primaryAction && canCreateAsset ? { ...header.primaryAction, onClick: () => setCreateModalOpen(true), disabled: loading } : undefined}
         secondaryActions={[
+          {
+            ...(header.secondaryActions?.[0] ?? { key: "asset-specs", label: "Asset Specs", variant: "secondary" }),
+            onClick: () => onNavigate?.("asset-specs"),
+            disabled: false,
+          },
           ...(canCreateAsset ? [{
-            ...(header.secondaryActions?.[0] ?? { key: "import", label: "Import", variant: "secondary" }),
+            ...(header.secondaryActions?.[1] ?? { key: "import", label: "Import", variant: "secondary" }),
             onClick: () => setImportOpen(true),
             disabled: loading,
           }] : []),
           ...(canExportReport ? [{
-            ...(header.secondaryActions?.[1] ?? { key: "export", label: "Export", variant: "secondary" }),
+            ...(header.secondaryActions?.[2] ?? { key: "export", label: "Export", variant: "secondary" }),
             onClick: handleExport,
             disabled: assets.length === 0,
           }] : []),
-          {
-            ...(header.secondaryActions?.[2] ?? { key: "asset-specs", label: "Asset Specs", variant: "secondary" }),
-            onClick: () => onNavigate?.("asset-specs"),
-            disabled: false,
-          },
         ]}
       />
 

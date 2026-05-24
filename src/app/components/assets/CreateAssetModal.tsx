@@ -6,10 +6,11 @@ import { Modal } from "../ui/Modal";
 import { RestoreDraftDialog } from "../ui/RestoreDraftDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { clearDraft, isShallowDirtyTrimmed, loadDraft, saveDraft } from "../../utils/draftStorage";
-import { LookupOption } from "../../services/lookupValue.service";
+import { LookupOption, LookupValue, getLookupValuesByMasterCode } from "../../services/lookupValue.service";
 import { OrgNode } from "../../../services/org.service";
 import { SupplierRecord } from "../../../services/supplier.service";
 import { createAsset } from "../../../services/asset.service";
+import { getAssetSpecs } from "../../../services/asset-spec.service";
 import { AssetMasterFormFields } from "./AssetMasterFormFields";
 import {
   AssetFieldErrors,
@@ -17,6 +18,8 @@ import {
   EMPTY_ASSET_FORM,
   buildCreateAssetPayload,
   flattenOrgTreeOptions,
+  mergeAssetSpecValues,
+  resolveAssetSubCategoryId,
   validateAssetForm,
 } from "./assetForm.shared";
 
@@ -92,6 +95,9 @@ export function CreateAssetModal({
   const [submitting, setSubmitting] = useState(false);
   const [restoreDraftOpen, setRestoreDraftOpen] = useState(false);
   const [pendingDraft, setPendingDraft] = useState<AssetFormState | null>(null);
+  const [subCategoryLookupValues, setSubCategoryLookupValues] = useState<LookupValue[]>([]);
+  const [assetSpecsLoading, setAssetSpecsLoading] = useState(false);
+  const [assetSpecsError, setAssetSpecsError] = useState<string | null>(null);
   const restoreDraftOnce = useRef(false);
 
   const orgOptions = useMemo(() => flattenOrgTreeOptions(orgTree), [orgTree]);
@@ -164,6 +170,91 @@ export function CreateAssetModal({
     }
   }, [defaultOrganization, open]);
 
+  useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const values = await getLookupValuesByMasterCode("ASSET_SUB_CATEGORY");
+        if (!cancelled) {
+          setSubCategoryLookupValues(values);
+          setAssetSpecsError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSubCategoryLookupValues([]);
+          setAssetSpecsError("Failed to load asset sub-category specifications.");
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    if (!formData.asset_sub_category) {
+      setAssetSpecsLoading(false);
+      setAssetSpecsError(null);
+      setFormData((previous) => (
+        previous.asset_spec_values.length === 0
+          ? previous
+          : { ...previous, asset_spec_values: [] }
+      ));
+      return;
+    }
+
+    if (subCategoryLookupValues.length === 0) {
+      return;
+    }
+
+    const subCategoryId = resolveAssetSubCategoryId(subCategoryLookupValues, formData.asset_sub_category);
+    if (!subCategoryId) {
+      setAssetSpecsLoading(false);
+      setAssetSpecsError(null);
+      setFormData((previous) => (
+        previous.asset_spec_values.length === 0
+          ? previous
+          : { ...previous, asset_spec_values: [] }
+      ));
+      return;
+    }
+
+    let cancelled = false;
+    setAssetSpecsLoading(true);
+    setAssetSpecsError(null);
+
+    const run = async () => {
+      try {
+        const specs = await getAssetSpecs({ asset_sub_category_id: subCategoryId });
+        if (cancelled) return;
+        setFormData((previous) => ({
+          ...previous,
+          asset_spec_values: mergeAssetSpecValues(specs, previous.asset_spec_values),
+        }));
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Failed to load asset specifications";
+        setAssetSpecsError(message);
+        setFormData((previous) => ({ ...previous, asset_spec_values: [] }));
+      } finally {
+        if (!cancelled) {
+          setAssetSpecsLoading(false);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.asset_sub_category, open, subCategoryLookupValues]);
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (submitting) return;
@@ -194,6 +285,15 @@ export function CreateAssetModal({
 
   const updateField = (key: keyof AssetFormState, value: string) => {
     setFormData((previous) => ({ ...previous, [key]: value }));
+  };
+
+  const updateAssetSpecValue = (assetSpecId: string, value: string) => {
+    setFormData((previous) => ({
+      ...previous,
+      asset_spec_values: previous.asset_spec_values.map((item) => (
+        item.asset_spec_id === assetSpecId ? { ...item, parameter_value: value } : item
+      )),
+    }));
   };
 
   return (
@@ -248,7 +348,10 @@ export function CreateAssetModal({
           currencies={currencies}
           criticalities={criticalities}
           assetNatures={assetNatures}
+          assetSpecsLoading={assetSpecsLoading}
+          assetSpecsError={assetSpecsError}
           onChange={updateField}
+          onAssetSpecValueChange={updateAssetSpecValue}
         />
       </form>
 

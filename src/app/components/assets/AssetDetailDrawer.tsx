@@ -162,6 +162,16 @@ const InfoField = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
+const groupAssetSpecValues = (items: AssetRecord["asset_spec_values"]): Array<[string, NonNullable<AssetRecord["asset_spec_values"]>]> => {
+  const groups = new Map<string, NonNullable<AssetRecord["asset_spec_values"]>>();
+  (items ?? []).forEach((item) => {
+    const existing = groups.get(item.parameter_grouping) ?? [];
+    existing.push(item);
+    groups.set(item.parameter_grouping, existing);
+  });
+  return Array.from(groups.entries());
+};
+
 export function AssetDetailDrawer({
   open,
   assetId,
@@ -454,6 +464,7 @@ export function AssetDetailDrawer({
   const organization = asset?.org_node_name || (asset?.org_node_id ? orgMap.get(asset.org_node_id)?.name : undefined) || "-";
   const supplier = asset?.supplier_name || (asset?.supplier_id ? supplierMap.get(asset.supplier_id) : undefined) || "-";
   const tagList = asset?.tags ?? [];
+  const assetSpecGroups = useMemo(() => groupAssetSpecValues(asset?.asset_spec_values), [asset?.asset_spec_values]);
   const locationForAsset = location?.asset_uuid === assetId ? location : null;
   const financeSupplier =
     finance?.supplier_name || (finance?.supplier_id ? supplierMap.get(finance.supplier_id) : undefined) || "-";
@@ -750,6 +761,34 @@ export function AssetDetailDrawer({
                     </div>
                     <InfoField label="Asset Nature" value={findLookupLabel(assetNatures, asset.asset_nature)} />
                   </div>
+                </div>
+
+                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900">Asset Specifications</h4>
+                  </div>
+                  {assetSpecGroups.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+                      No asset specifications were stored for this asset.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {assetSpecGroups.map(([grouping, items]) => (
+                        <div key={grouping} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+                          <h5 className="text-sm font-semibold text-slate-900">{grouping}</h5>
+                          <div className="space-y-3">
+                            {items.map((item) => (
+                              <div key={item.asset_spec_id} className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 md:grid-cols-[1fr_1.2fr_1fr]">
+                                <InfoField label="Parameter Name" value={formatValue(item.parameter_name)} />
+                                <InfoField label="Description" value={formatValue(item.parameter_description)} />
+                                <InfoField label="Value" value={formatValue(item.parameter_value)} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
