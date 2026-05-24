@@ -45,7 +45,7 @@ import {
   getVectorizationStatusBadgeClass,
 } from "./documentLinkForm.shared";
 
-type RagDetailTab = "chunks" | "report" | "process";
+export type RagDetailTab = "chunks" | "report" | "process";
 
 interface AssetRagInsightsPanelProps {
   enabled: boolean;
@@ -296,7 +296,7 @@ function VectorizedDocumentsTable({
   );
 }
 
-function DocumentChunkViewer({ document }: { document: AssetVectorizationDocument }) {
+export function DocumentChunkViewer({ document }: { document: AssetVectorizationDocument }) {
   const [chunkData, setChunkData] = useState<DocumentVectorizationChunkList | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState("");
@@ -454,7 +454,7 @@ function DocumentChunkViewer({ document }: { document: AssetVectorizationDocumen
   );
 }
 
-function DocumentJsonReportViewer({ document }: { document: AssetVectorizationDocument }) {
+export function DocumentJsonReportViewer({ document }: { document: AssetVectorizationDocument }) {
   const [report, setReport] = useState<DocumentVectorizationReport | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -505,7 +505,7 @@ function formatProcessTimestamp(stage: DocumentRagProcessStage): string {
   return formatDocumentLinkDate(stage.completed_at || stage.started_at || stage.timestamp);
 }
 
-function DocumentRagProcessTimeline({ document }: { document: AssetVectorizationDocument }) {
+export function DocumentRagProcessTimeline({ document }: { document: AssetVectorizationDocument }) {
   const [process, setProcess] = useState<DocumentRagProcess | null>(null);
   const [loading, setLoading] = useState(false);
 

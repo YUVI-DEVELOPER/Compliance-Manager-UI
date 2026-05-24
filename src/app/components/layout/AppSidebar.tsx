@@ -1,5 +1,19 @@
 import React, { useState } from "react";
-import { BarChart3, Building2, FileText, GitBranch, KeyRound, LogOut, Settings, ShieldCheck, Users } from "lucide-react";
+import {
+  BarChart3,
+  Bot,
+  Building2,
+  ClipboardCheck,
+  ClipboardList,
+  FileText,
+  GitBranch,
+  KeyRound,
+  LogOut,
+  PackageCheck,
+  Settings,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
 
 import { canAccessRule, PAGE_ACCESS_RULES } from "../../auth/accessPolicy";
 import type { NavPage } from "../../auth/accessPolicy";
@@ -23,18 +37,25 @@ const navItems: NavItem[] = [
   { key: "asset-specs", label: "Asset Specs", group: "Management", icon: <FileText className={iconClass} /> },
   { key: "asset", label: "Asset", group: "Management", icon: <Settings className={iconClass} /> },
   { key: "asset-grouping", label: "Asset Grouping", group: "Management", icon: <GitBranch className={iconClass} /> },
+  { key: "asset", label: "Asset Master", group: "Management", icon: <Settings className={iconClass} /> },
+  { key: "asset-grouping", label: "Asset Grouping", group: "Management", icon: <GitBranch className={iconClass} /> },
+  { key: "asset-specs", label: "Asset Specs", group: "Management", icon: <FileText className={iconClass} /> },
+  { key: "asset-releases", label: "Asset Releases", group: "Operations", icon: <PackageCheck className={iconClass} /> },
+  { key: "supplier-evaluations", label: "Supplier Evaluations", group: "Operations", icon: <ClipboardCheck className={iconClass} /> },
+  { key: "document-portal", label: "Document Portal", group: "Operations", icon: <FileText className={iconClass} /> },
+  { key: "document-intelligence", label: "Document Intelligence", group: "Intelligence", icon: <Bot className={iconClass} /> },
+  { key: "periodic-review", label: "Periodic Review", group: "Intelligence", icon: <ShieldCheck className={iconClass} /> },
+  { key: "reports", label: "Asset Inventory Report", group: "Intelligence", icon: <BarChart3 className={iconClass} /> },
+  { key: "infrastructure-graph", label: "Infrastructure Graph", group: "Intelligence", icon: <GitBranch className={iconClass} /> },
   { key: "user-management", label: "User Management", group: "Configuration", icon: <Users className={iconClass} /> },
   { key: "role-management", label: "Role Management", group: "Configuration", icon: <ShieldCheck className={iconClass} /> },
   { key: "permission-management", label: "Permissions", group: "Configuration", icon: <KeyRound className={iconClass} /> },
+  { key: "audit-log", label: "Audit Log", group: "Configuration", icon: <ClipboardList className={iconClass} /> },
   { key: "lookup-master", label: "Lookup Master", group: "Configuration", icon: <Settings className={iconClass} /> },
   { key: "lookup-values", label: "Lookup Values", group: "Configuration", icon: <KeyRound className={iconClass} /> },
-  { key: "periodic-review", label: "Periodic Review", group: "Analytics", icon: <ShieldCheck className={iconClass} /> },
-  { key: "document-portal", label: "Document Portal", group: "Analytics", icon: <FileText className={iconClass} /> },
-  { key: "reports", label: "Asset Inventory Report", group: "Analytics", icon: <BarChart3 className={iconClass} /> },
-  { key: "infrastructure-graph", label: "Infrastructure Graph", group: "Analytics", icon: <GitBranch className={iconClass} /> },
 ];
 
-const groups = ["Management", "Configuration", "Analytics"];
+const groups = ["Management", "Operations", "Intelligence", "Configuration"];
 
 interface AppSidebarProps {
   activePage: NavPage;
@@ -43,10 +64,10 @@ interface AppSidebarProps {
 
 export function AppSidebar({ activePage, onNavigate }: AppSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const { hasAnyPermission, logout, user } = useAuth();
+  const { hasAnyPermission, hasRole, logout, user } = useAuth();
   const visibleNavItems = navItems.filter((item) => {
     const rule = PAGE_ACCESS_RULES[item.key];
-    return rule ? canAccessRule(rule, hasAnyPermission) : false;
+    return rule ? canAccessRule(rule, hasAnyPermission, hasRole) : false;
   });
   const initials = (user?.full_name || user?.email || "U")
     .split(/\s|@/)

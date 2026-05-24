@@ -185,6 +185,7 @@ export function CommonPageHeader({
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0 flex-1">
               <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+              {subtitle ? <p className="mt-1 max-w-3xl text-sm text-slate-500">{subtitle}</p> : null}
             </div>
 
             {hasActions ? (
