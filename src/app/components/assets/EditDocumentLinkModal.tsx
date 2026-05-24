@@ -10,6 +10,8 @@ import { DocumentUploadUrlField } from "./DocumentUploadUrlField";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Modal } from "../ui/Modal";
+import { RightPanel } from "../foundation";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption } from "../../services/lookupValue.service";
 import {
   analyzeDocumentLinkAutofill,
@@ -40,11 +42,11 @@ interface EditDocumentLinkModalProps {
   documentLinkId: string | null;
   context: DocumentLinkContext;
   sourceSystemOptions?: LookupOption[];
+  presentation?: "modal" | "panel";
   onClose: () => void;
   onUpdated: () => Promise<void> | void;
 }
 
-const DEFAULT_MODIFIED_BY = "admin";
 const AI_AUTOFILL_FIELD_KEYS = new Set<keyof DocumentLinkFormState>([
   "document_type",
   "external_document_id",
@@ -61,9 +63,12 @@ export function EditDocumentLinkModal({
   documentLinkId,
   context,
   sourceSystemOptions = [],
+  presentation = "modal",
   onClose,
   onUpdated,
 }: EditDocumentLinkModalProps) {
+  const actor = useCurrentActor();
+  const actorName = actor.auditName ?? actor.id ?? actor.displayName;
   const [formData, setFormData] = useState<DocumentLinkFormState>(EMPTY_DOCUMENT_LINK_FORM);
   const [initialFormData, setInitialFormData] = useState<DocumentLinkFormState>(EMPTY_DOCUMENT_LINK_FORM);
   const [fieldErrors, setFieldErrors] = useState<DocumentLinkFieldErrors>({});
@@ -256,7 +261,7 @@ export function EditDocumentLinkModal({
       return;
     }
 
-    const payload = buildUpdateDocumentLinkPayload(initialFormData, nextFormData, DEFAULT_MODIFIED_BY);
+    const payload = buildUpdateDocumentLinkPayload(initialFormData, nextFormData, actorName);
     if (Object.keys(payload).length === 1 && payload.modified_by) {
       toast.message("No changes to save");
       return;
@@ -279,37 +284,31 @@ export function EditDocumentLinkModal({
     }
   };
 
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Edit Document"
-      description="Only modified fields are sent to the backend. Target context remains fixed."
-      size="lg"
-      footer={
-        <>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form="edit-document-link-form"
-            disabled={
-              loading ||
-              submitting ||
-              !documentLinkId ||
-              aiAutofill.status === "analyzing" ||
-              (aiAutofillEnabled && !showAiReviewFields)
-            }
-          >
-            {submitting ? "Saving..." : "Save Changes"}
-          </Button>
-        </>
-      }
-    >
-      {loading ? (
-        <div className="text-sm text-slate-600">Loading document link...</div>
-      ) : (
+  const description = "Only modified fields are sent to the backend. Target context remains fixed.";
+  const footer = (
+    <>
+      <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>
+        Cancel
+      </Button>
+      <Button
+        type="submit"
+        form="edit-document-link-form"
+        disabled={
+          loading ||
+          submitting ||
+          !documentLinkId ||
+          aiAutofill.status === "analyzing" ||
+          (aiAutofillEnabled && !showAiReviewFields)
+        }
+      >
+        {submitting ? "Saving..." : "Save Changes"}
+      </Button>
+    </>
+  );
+
+  const content = loading ? (
+    <div className="text-sm text-slate-600">Loading document link...</div>
+  ) : (
         <form id="edit-document-link-form" className="space-y-5" onSubmit={(event) => void handleSubmit(event)}>
           {renderDocumentLinkFieldError(fieldErrors, "form")}
 
@@ -520,7 +519,26 @@ export function EditDocumentLinkModal({
             </section>
           ) : null}
         </form>
-      )}
+  );
+
+  if (presentation === "panel") {
+    return (
+      <RightPanel
+        open={open}
+        onClose={onClose}
+        title="Edit Document"
+        description={description}
+        footer={footer}
+        widthClassName="max-w-2xl"
+      >
+        {content}
+      </RightPanel>
+    );
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Edit Document" description={description} size="lg" footer={footer}>
+      {content}
     </Modal>
   );
 }

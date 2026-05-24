@@ -19,6 +19,7 @@ import { LookupOption } from "../../services/lookupValue.service";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { DocumentUploadUrlField } from "./DocumentUploadUrlField";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { Input } from "../ui/input";
 import { Modal } from "../ui/Modal";
 import { Textarea } from "../ui/textarea";
@@ -52,9 +53,11 @@ interface QualificationDocumentModalProps {
   qualificationDocumentId: string | null;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canSubmit?: boolean;
+  canReview?: boolean;
 }
-
-const DEFAULT_ACTOR = "admin";
 
 const formatValue = (value?: string | null): string => {
   if (!value || !value.trim()) return "-";
@@ -70,7 +73,13 @@ export function QualificationDocumentModal({
   qualificationDocumentId,
   onClose,
   onSaved,
+  canCreate = true,
+  canEdit = true,
+  canSubmit = true,
+  canReview = true,
 }: QualificationDocumentModalProps) {
+  const actor = useCurrentActor();
+  const actorName = actor.auditName ?? actor.id ?? actor.displayName;
   const isEditing = Boolean(qualificationDocumentId);
   const [document, setDocument] = useState<QualificationDocumentRecord | null>(null);
   const [history, setHistory] = useState<QualificationDocumentActionRecord[]>([]);
@@ -100,9 +109,9 @@ export function QualificationDocumentModal({
     () => availableReleaseOptions.find((item) => item.release_id === formData.release_id) ?? null,
     [availableReleaseOptions, formData.release_id],
   );
-  const metadataEditable = !isEditing || canEditQualificationDocument(document?.status);
-  const reviewable = canReviewQualificationDocument(document?.status);
-  const submittable = canSubmitQualificationDocument(document?.status);
+  const metadataEditable = !isEditing ? canCreate : canEdit && canEditQualificationDocument(document?.status);
+  const reviewable = canReview && canReviewQualificationDocument(document?.status);
+  const submittable = canSubmit && canSubmitQualificationDocument(document?.status);
 
   const loadDocument = useCallback(async () => {
     if (!qualificationDocumentId) return;
@@ -174,6 +183,10 @@ export function QualificationDocumentModal({
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (loading || submitting || workflowBusy) return;
+    if (!metadataEditable) {
+      setFieldErrors({ form: "You do not have permission to save this qualification document." });
+      return;
+    }
 
     const validationErrors = validateQualificationDocumentForm(formData, context);
     if (Object.keys(validationErrors).length > 0) {
@@ -190,7 +203,7 @@ export function QualificationDocumentModal({
           initialFormData,
           formData,
           context,
-          DEFAULT_ACTOR,
+          actorName,
         );
         if (Object.keys(payload).length === 1 && payload.modified_by) {
           toast.message("No changes to save");
@@ -201,7 +214,7 @@ export function QualificationDocumentModal({
         await updateQualificationDocument(qualificationDocumentId, payload);
         toast.success("Qualification document updated successfully");
       } else {
-        const payload = buildCreateQualificationDocumentPayload(formData, context, DEFAULT_ACTOR);
+        const payload = buildCreateQualificationDocumentPayload(formData, context, actorName);
         await createQualificationDocument(payload);
         toast.success("Qualification document registered successfully");
       }
@@ -221,6 +234,8 @@ export function QualificationDocumentModal({
     action: "submit" | "accept" | "reject" | "clarification",
   ) => {
     if (!qualificationDocumentId || workflowBusy) return;
+    if (action === "submit" && !submittable) return;
+    if (action !== "submit" && !reviewable) return;
 
     setWorkflowBusy(true);
     setFieldErrors({});
@@ -228,28 +243,28 @@ export function QualificationDocumentModal({
     try {
       if (action === "submit") {
         await submitQualificationDocumentForReview(qualificationDocumentId, {
-          action_by: DEFAULT_ACTOR,
+          action_by: actorName,
           comment_text: workflowComment.trim() || undefined,
         });
         toast.success("Qualification document submitted for review");
       }
       if (action === "accept") {
         await acceptQualificationDocument(qualificationDocumentId, {
-          action_by: DEFAULT_ACTOR,
+          action_by: actorName,
           comment_text: workflowComment.trim() || undefined,
         });
         toast.success("Qualification document accepted");
       }
       if (action === "reject") {
         await rejectQualificationDocument(qualificationDocumentId, {
-          action_by: DEFAULT_ACTOR,
+          action_by: actorName,
           comment_text: workflowComment.trim() || undefined,
         });
         toast.success("Qualification document rejected");
       }
       if (action === "clarification") {
         await requestQualificationDocumentClarification(qualificationDocumentId, {
-          action_by: DEFAULT_ACTOR,
+          action_by: actorName,
           comment_text: workflowComment.trim() || undefined,
         });
         toast.success("Clarification requested for qualification document");

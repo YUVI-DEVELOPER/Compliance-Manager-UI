@@ -7,9 +7,7 @@ import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from ".
 import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
 import { useCurrentActor } from "../auth/useCurrentActor";
 
-type OrgWorkspaceTab = "structure" | "roleCatalog";
-
-const DEFAULT_USER = "admin@validatenow"; // TODO: Replace hardcoded actor during module redesign.
+type OrgWorkspaceTab = "hierarchy" | "roleLibrary";
 
 interface OrgHeaderControls {
   refresh: () => void;
@@ -22,9 +20,8 @@ interface OrgHeaderControls {
 export function OrgStructurePage() {
   const currentActor = useCurrentActor();
   const header = getPageHeaderConfig("org-structure");
-  const [activeTab, setActiveTab] = useState<OrgWorkspaceTab>("structure");
+  const [activeTab, setActiveTab] = useState<OrgWorkspaceTab>("hierarchy");
   const [headerControls, setHeaderControls] = useState<OrgHeaderControls | null>(null);
-  const [orgSearch, setOrgSearch] = useState("");
   const [summary, setSummary] = useState({
     total: 0,
     active: 0,
@@ -73,8 +70,7 @@ export function OrgStructurePage() {
       tone: "violet" as const,
     },
   ];
-  const headerStats = activeTab === "structure" ? organizationHeaderStats : governanceHeaderStats;
-  const defaultUser = currentActor.auditName ?? DEFAULT_USER;
+  const headerStats = activeTab === "hierarchy" ? organizationHeaderStats : governanceHeaderStats;
 
   return (
     <div className={PAGE_LAYOUT_SHELL_CLASS}>
@@ -83,31 +79,12 @@ export function OrgStructurePage() {
       <CommonPageHeader
         breadcrumbs={header.breadcrumbs}
         sectionLabel={header.sectionLabel}
-        title={header.title}
-        subtitle={header.subtitle}
+        title="Org Structure"
+        subtitle="Manage business hierarchy, ownership, and governance roles"
         stats={headerStats}
-        search={
-          activeTab === "structure"
-            ? {
-                value: orgSearch,
-                placeholder: "Search organizations, organization codes, or business types",
-                onChange: setOrgSearch,
-                onClear: () => setOrgSearch(""),
-                disabled: !headerControls,
-              }
-            : undefined
-        }
-        primaryAction={
-          activeTab === "structure" && header.primaryAction && headerControls?.showCreateRoot
-            ? {
-                ...header.primaryAction,
-                onClick: headerControls.createRoot,
-                disabled: headerControls.createRootDisabled,
-              }
-            : undefined
-        }
+        primaryAction={undefined}
         secondaryActions={
-          activeTab === "structure" && header.secondaryActions?.length && headerControls
+          activeTab === "hierarchy" && header.secondaryActions?.length && headerControls
             ? [
                 {
                   ...header.secondaryActions[0],
@@ -117,25 +94,32 @@ export function OrgStructurePage() {
               ]
             : []
         }
-        tabs={(header.tabs ?? []).map((tab) => ({
-          ...tab,
-          active: tab.key === "organization-design" ? activeTab === "structure" : activeTab === "roleCatalog",
-          onClick: () => setActiveTab(tab.key === "organization-design" ? "structure" : "roleCatalog"),
-        }))}
+        tabs={[
+          {
+            key: "hierarchy-design",
+            label: "Hierarchy Design",
+            active: activeTab === "hierarchy",
+            onClick: () => setActiveTab("hierarchy"),
+          },
+          {
+            key: "role-library",
+            label: "Role Library",
+            active: activeTab === "roleLibrary",
+            onClick: () => setActiveTab("roleLibrary"),
+          },
+        ]}
       />
 
       <div className={PAGE_CONTENT_CLASS}>
-        {activeTab === "structure" ? (
+        {activeTab === "hierarchy" ? (
           <OrgHierarchyWorkspace
-            defaultUser={defaultUser}
+            actorName={currentActor.auditName}
+            actorId={currentActor.id}
             onSummaryChange={setSummary}
             onHeaderControlsChange={setHeaderControls}
-            searchInput={orgSearch}
-            onSearchInputChange={setOrgSearch}
-            showSearchCard={false}
           />
         ) : (
-          <OrgRoleCatalogAdmin defaultUser={defaultUser} onCatalogSummaryChange={setCatalogSummary} />
+          <OrgRoleCatalogAdmin actorName={currentActor.auditName} onCatalogSummaryChange={setCatalogSummary} />
         )}
       </div>
     </div>

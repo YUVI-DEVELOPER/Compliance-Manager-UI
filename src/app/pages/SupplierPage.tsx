@@ -1,13 +1,18 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { Download, Edit3, Eye, Plus, RefreshCw, Save, Trash2, Upload, X } from "lucide-react";
 import { toast, Toaster } from "sonner";
-import { Card, CardBody, CardFooter } from "../components/ui/Card";
-import { Button } from "../components/ui/Button";
-import { Input } from "../components/ui/Input";
-import { ConfirmDialog, Modal } from "../components/ui/Modal";
-import { RestoreDraftDialog } from "../components/ui/RestoreDraftDialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { clearDraft, isShallowDirtyTrimmed, loadDraft, saveDraft } from "../utils/draftStorage";
+
+import { PermissionGuard } from "../auth/PermissionGuard";
+import { useAuth } from "../auth/useAuth";
+import { useCurrentActor } from "../auth/useCurrentActor";
+import { ConfirmStrip, EmptyState, FilterBar, RightPanel, StatusBadge } from "../components/foundation";
+import { CsvImportModal } from "../components/importExport/CsvImportModal";
+import { downloadCsv } from "../components/importExport/csv";
+import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../components/layout/CommonPageHeader";
+import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
+import { Button } from "../components/ui/button";
+import { Input, SearchInput } from "../components/ui/input";
 import {
   Pagination,
   Table,
@@ -16,11 +21,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "../components/ui/Table";
+} from "../components/ui/table";
+import { clearDraft, isShallowDirtyTrimmed, loadDraft, saveDraft } from "../utils/draftStorage";
+import { navigateToSupplierEvaluations } from "../utils/moduleNavigation";
+import { type LookupOption, getLookupOptionsByMasterCode } from "../services/lookupValue.service";
 import {
-  CreateSupplierPayload,
-  SupplierRecord,
-  UpdateSupplierPayload,
+  type CreateSupplierPayload,
+  type SupplierRecord,
+  type UpdateSupplierPayload,
   createSupplier,
   deleteSupplier,
   exportAllSuppliers,
@@ -29,37 +37,28 @@ import {
   searchSuppliers,
   updateSupplier,
 } from "../../services/supplier.service";
-import { LookupOption, getLookupOptionsByMasterCode } from "../services/lookupValue.service";
-import { CsvImportModal } from "../components/importExport/CsvImportModal";
-import { downloadCsv } from "../components/importExport/csv";
-import { SupplierDetailDrawer } from "../components/suppliers/SupplierDetailDrawer";
-import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../components/layout/CommonPageHeader";
-import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
-import { useAuth } from "../auth/useAuth";
-import { useCurrentActor } from "../auth/useCurrentActor";
 
-interface FieldErrors {
-  [key: string]: string;
-}
+type SupplierFormMode = "create" | "edit";
+type PanelMode = SupplierFormMode | "view" | null;
 
-interface SupplierFormState {
-  supplier_name: string;
-  supplier_type: string;
-  supplier_add1: string;
-  supplier_add2: string;
-  supplier_city: string;
-  supplier_pincode: string;
-  supplier_state: string;
-  supplier_country: string;
-  contact_name: string;
-  contact_email: string;
-  contact_phone: string;
-  [key: string]: string;
-}
+const SUPPLIER_FORM_FIELDS = [
+  "supplier_name",
+  "supplier_type",
+  "supplier_add1",
+  "supplier_add2",
+  "supplier_city",
+  "supplier_pincode",
+  "supplier_state",
+  "supplier_country",
+  "contact_name",
+  "contact_email",
+  "contact_phone",
+] as const;
 
-type SupplierFormMode = "add" | "edit";
+type SupplierFormKey = (typeof SUPPLIER_FORM_FIELDS)[number];
+type SupplierFormState = Record<SupplierFormKey, string>;
+type FieldErrors = Partial<Record<SupplierFormKey | "form", string>>;
 
-const CURRENT_USER_ID = "00000000-0000-0000-0000-000000000001"; // TODO: Replace hardcoded actor during module redesign.
 const PAGE_SIZE = 10;
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -76,6 +75,9 @@ const EMPTY_FORM: SupplierFormState = {
   contact_email: "",
   contact_phone: "",
 };
+
+const selectClassName =
+  "flex h-10 w-full rounded-md border border-input bg-input-background px-3 py-2 text-sm text-slate-900 outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50";
 
 const recordToForm = (record: SupplierRecord): SupplierFormState => ({
   supplier_name: record.supplier_name ?? "",
@@ -107,7 +109,7 @@ const mapAxiosError = (error: unknown): { message: string; fieldErrors?: FieldEr
           const loc = (item as { loc?: unknown }).loc;
           const msg = (item as { msg?: string }).msg;
           const field = Array.isArray(loc) && loc.length > 0 ? String(loc[loc.length - 1]) : "form";
-          fieldErrors[field] = msg ?? "Invalid value";
+          fieldErrors[field as SupplierFormKey | "form"] = msg ?? "Invalid value";
         }
       });
     }
@@ -128,6 +130,11 @@ const normalizeOptional = (value: string): string | undefined => {
   return trimmed.length ? trimmed : undefined;
 };
 
+const optionalCsv = (value: string | undefined): string | undefined => {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length ? trimmed : undefined;
+};
+
 const buildCreatePayload = (form: SupplierFormState, actorId: string): CreateSupplierPayload => ({
   supplier_name: form.supplier_name.trim(),
   created_by: actorId,
@@ -145,15 +152,15 @@ const buildCreatePayload = (form: SupplierFormState, actorId: string): CreateSup
 
 const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormState, actorId: string): UpdateSupplierPayload => {
   const payload: UpdateSupplierPayload = {};
-  const keys = Object.keys(current) as (keyof SupplierFormState)[];
+  const mutablePayload = payload as Partial<Record<SupplierFormKey, string>>;
 
-  keys.forEach((key) => {
+  SUPPLIER_FORM_FIELDS.forEach((key) => {
     const initialValue = initial[key].trim();
     const currentValue = current[key].trim();
     if (initialValue !== currentValue) {
       const normalized = normalizeOptional(current[key]);
       if (normalized !== undefined) {
-        payload[key as keyof UpdateSupplierPayload] = normalized;
+        mutablePayload[key] = normalized;
       }
     }
   });
@@ -165,6 +172,48 @@ const buildUpdatePayload = (initial: SupplierFormState, current: SupplierFormSta
   return payload;
 };
 
+const formatValue = (value?: string | null): string => {
+  const text = String(value ?? "").trim();
+  return text || "-";
+};
+
+const formatDate = (value?: string | null): string => {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString();
+};
+
+const supplierCode = (supplier: SupplierRecord): string => supplier.supplier_id;
+
+const shortSupplierCode = (supplier: SupplierRecord): string => {
+  const code = supplierCode(supplier);
+  return code.length > 12 ? `${code.slice(0, 8)}...` : code;
+};
+
+const findLookupLabel = (options: LookupOption[], code?: string | null): string => {
+  if (!code) return "-";
+  const match = options.find((option) => option.code === code);
+  return match?.value ?? code;
+};
+
+const supplierSearchText = (supplier: SupplierRecord, supplierTypes: LookupOption[]): string =>
+  [
+    supplier.supplier_id,
+    supplier.supplier_name,
+    supplier.supplier_type,
+    findLookupLabel(supplierTypes, supplier.supplier_type),
+    supplier.contact_name,
+    supplier.contact_email,
+    supplier.contact_phone,
+    supplier.supplier_city,
+    supplier.supplier_state,
+    supplier.supplier_country,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
 export function SupplierPage() {
   const { hasPermission } = useAuth();
   const currentActor = useCurrentActor();
@@ -173,32 +222,30 @@ export function SupplierPage() {
   const canDeleteSupplier = hasPermission("SUPPLIER_DELETE");
   const canExportReport = hasPermission("REPORT_EXPORT");
   const header = getPageHeaderConfig("supplier");
+
   const [search, setSearch] = useState("");
+  const [supplierTypeFilter, setSupplierTypeFilter] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierRecord[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [page, setPage] = useState(1);
 
-  const [showForm, setShowForm] = useState(false);
-  const [formMode, setFormMode] = useState<SupplierFormMode>("add");
-  const [formLoading, setFormLoading] = useState(false);
+  const [panelMode, setPanelMode] = useState<PanelMode>(null);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+  const [selectedSupplier, setSelectedSupplier] = useState<SupplierRecord | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [formData, setFormData] = useState<SupplierFormState>(EMPTY_FORM);
+  const [initialFormData, setInitialFormData] = useState<SupplierFormState>(EMPTY_FORM);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<SupplierRecord | null>(null);
+
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState(false);
   const [supplierTypeOptions, setSupplierTypeOptions] = useState<LookupOption[]>([]);
   const [countryOptions, setCountryOptions] = useState<LookupOption[]>([]);
-  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [formData, setFormData] = useState<SupplierFormState>(EMPTY_FORM);
-  const [initialFormData, setInitialFormData] = useState<SupplierFormState>(EMPTY_FORM);
-  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
-  const [restoreDraftOpen, setRestoreDraftOpen] = useState(false);
+
   const [pendingDraft, setPendingDraft] = useState<SupplierFormState | null>(null);
   const restoreDraftKey = useRef<string | null>(null);
-
-const [showDelete, setShowDelete] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<SupplierRecord | null>(null);
-
-  const [showSupplierDetail, setShowSupplierDetail] = useState(false);
-  const [detailSupplierId, setDetailSupplierId] = useState<string | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importInitialText, setImportInitialText] = useState<string | null>(null);
@@ -208,12 +255,77 @@ const [showDelete, setShowDelete] = useState(false);
   const didInitSearch = useRef(false);
   const lookupSeq = useRef(0);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(suppliers.length / PAGE_SIZE)), [suppliers.length]);
+  const currentActorId = currentActor.id ?? currentActor.auditName ?? currentActor.displayName;
+
+  const filteredSuppliers = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return suppliers.filter((supplier) => {
+      if (supplierTypeFilter && supplier.supplier_type !== supplierTypeFilter) return false;
+      if (query && !supplierSearchText(supplier, supplierTypeOptions).includes(query)) return false;
+      return true;
+    });
+  }, [search, supplierTypeFilter, supplierTypeOptions, suppliers]);
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(filteredSuppliers.length / PAGE_SIZE)), [filteredSuppliers.length]);
   const paginatedSuppliers = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
-    return suppliers.slice(start, start + PAGE_SIZE);
-  }, [page, suppliers]);
-  const currentActorId = currentActor.id ?? CURRENT_USER_ID;
+    return filteredSuppliers.slice(start, start + PAGE_SIZE);
+  }, [filteredSuppliers, page]);
+
+  const activeDraftKey = useMemo(() => {
+    if (panelMode === "create") return "draft_supplier_create";
+    if (panelMode === "edit") return selectedSupplierId ? `draft_supplier_edit_${selectedSupplierId}` : null;
+    return null;
+  }, [panelMode, selectedSupplierId]);
+
+  const draftBaseline = useMemo(() => (panelMode === "create" ? EMPTY_FORM : initialFormData), [initialFormData, panelMode]);
+  const isDraftDirty = useMemo(() => isShallowDirtyTrimmed(formData, draftBaseline), [draftBaseline, formData]);
+
+  const saveCurrentDraft = useCallback(
+    (options?: { force?: boolean; toasts?: boolean }) => {
+      if (!activeDraftKey) return;
+      const force = options?.force ?? false;
+      const showToast = options?.toasts ?? false;
+
+      if (!force && !isDraftDirty) {
+        clearDraft(activeDraftKey);
+        return;
+      }
+
+      try {
+        saveDraft(activeDraftKey, formData);
+        if (showToast) toast.message("Draft saved");
+      } catch {
+        toast.error("Failed to save draft");
+      }
+    },
+    [activeDraftKey, formData, isDraftDirty],
+  );
+
+  const discardCurrentDraft = useCallback(() => {
+    if (!activeDraftKey) return;
+    clearDraft(activeDraftKey);
+  }, [activeDraftKey]);
+
+  const closePanel = useCallback(() => {
+    setPanelMode(null);
+    setSelectedSupplierId(null);
+    setSelectedSupplier(null);
+    setPendingDelete(null);
+    setPendingDraft(null);
+    setFieldErrors({});
+    setFormData(EMPTY_FORM);
+    setInitialFormData(EMPTY_FORM);
+    restoreDraftKey.current = null;
+  }, []);
+
+  const handlePanelClose = useCallback(() => {
+    if (submitting) return;
+    if (panelMode === "create" || panelMode === "edit") {
+      saveCurrentDraft();
+    }
+    closePanel();
+  }, [closePanel, panelMode, saveCurrentDraft, submitting]);
 
   const reloadSuppliers = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -247,15 +359,38 @@ const [showDelete, setShowDelete] = useState(false);
     }
   }, []);
 
+  const loadLookups = useCallback(async () => {
+    const seq = ++lookupSeq.current;
+    setLookupLoading(true);
+    setLookupError(false);
+    try {
+      const [supplierTypes, countries] = await Promise.all([
+        getLookupOptionsByMasterCode("SUPPLIER_TYPE"),
+        getLookupOptionsByMasterCode("COUNTRY"),
+      ]);
+      if (seq !== lookupSeq.current) return;
+      setSupplierTypeOptions(supplierTypes);
+      setCountryOptions(countries);
+    } catch {
+      if (seq !== lookupSeq.current) return;
+      setLookupError(true);
+      toast.error("Failed to load dropdown values");
+    } finally {
+      if (seq === lookupSeq.current) setLookupLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void reloadSuppliers();
-  }, [reloadSuppliers]);
+    void loadLookups();
+  }, [loadLookups, reloadSuppliers]);
 
   useEffect(() => {
     if (!didInitSearch.current) {
       didInitSearch.current = true;
       return;
     }
+
     const trimmed = search.trim();
     const handle = window.setTimeout(() => {
       if (!trimmed) {
@@ -273,145 +408,106 @@ const [showDelete, setShowDelete] = useState(false);
   }, [page, totalPages]);
 
   useEffect(() => {
-    if (!showForm) return;
-
-    const seq = ++lookupSeq.current;
-    setLookupLoading(true);
-    setLookupError(false);
-    setSupplierTypeOptions([]);
-    setCountryOptions([]);
-
-    const run = async () => {
-      try {
-        if (seq !== lookupSeq.current) return;
-        const [supplierTypes, countries] = await Promise.all([
-          getLookupOptionsByMasterCode("SUPPLIER_TYPE"),
-          getLookupOptionsByMasterCode("COUNTRY"),
-        ]);
-        if (seq !== lookupSeq.current) return;
-        setSupplierTypeOptions(supplierTypes);
-        setCountryOptions(countries);
-      } catch {
-        if (seq !== lookupSeq.current) return;
-        setLookupError(true);
-        toast.error("Failed to load dropdown values");
-      } finally {
-        if (seq === lookupSeq.current) setLookupLoading(false);
-      }
-    };
-
-    void run();
-  }, [showForm]);
-
-  const activeDraftKey = useMemo(() => {
-    if (formMode === "add") return "draft_supplier_create";
-    return selectedSupplierId ? `draft_supplier_edit_${selectedSupplierId}` : null;
-  }, [formMode, selectedSupplierId]);
-
-  const draftBaseline = useMemo(() => (formMode === "add" ? EMPTY_FORM : initialFormData), [formMode, initialFormData]);
-
-  const isDraftDirty = useMemo(
-    () => isShallowDirtyTrimmed(formData, draftBaseline),
-    [draftBaseline, formData],
-  );
-
-  const saveCurrentDraft = useCallback(
-    (options?: { force?: boolean; toasts?: boolean }) => {
-      if (!activeDraftKey) return;
-      const force = options?.force ?? false;
-      const showToast = options?.toasts ?? false;
-
-      if (!force && !isDraftDirty) {
-        clearDraft(activeDraftKey);
-        return;
-      }
-      try {
-        saveDraft(activeDraftKey, formData);
-        if (showToast) toast.message("Draft saved");
-      } catch {
-        toast.error("Failed to save draft");
-      }
-    },
-    [activeDraftKey, formData, isDraftDirty],
-  );
-
-  const discardCurrentDraft = useCallback(() => {
-    if (!activeDraftKey) return;
-    clearDraft(activeDraftKey);
-  }, [activeDraftKey]);
-
-  const handleRequestClose = useCallback(() => {
-    if (submitting) return;
-    saveCurrentDraft();
-    setShowForm(false);
-  }, [saveCurrentDraft, submitting]);
-
-  const handleCancel = useCallback(() => {
-    if (submitting) return;
-    discardCurrentDraft();
-    setShowForm(false);
-  }, [discardCurrentDraft, submitting]);
-
-  useEffect(() => {
-    if (!showForm) {
+    if (panelMode !== "create" && panelMode !== "edit") {
       restoreDraftKey.current = null;
-      setRestoreDraftOpen(false);
       setPendingDraft(null);
       return;
     }
 
     if (!activeDraftKey) return;
-    if (formMode === "edit" && formLoading) return;
+    if (detailLoading) return;
     if (restoreDraftKey.current === activeDraftKey) return;
 
     restoreDraftKey.current = activeDraftKey;
     const draft = loadDraft<SupplierFormState>(activeDraftKey);
     if (draft) {
       setPendingDraft(draft);
-      setRestoreDraftOpen(true);
     }
-  }, [activeDraftKey, formLoading, formMode, showForm]);
+  }, [activeDraftKey, detailLoading, panelMode]);
+
+  const fetchSupplierDetail = async (supplierId: string): Promise<SupplierRecord | null> => {
+    setDetailLoading(true);
+    try {
+      const detail = await getSupplierById(supplierId);
+      setSelectedSupplier(detail);
+      return detail;
+    } catch (error) {
+      const mapped = mapAxiosError(error);
+      toast.error(mapped.message);
+      return null;
+    } finally {
+      setDetailLoading(false);
+    }
+  };
 
   const openCreate = () => {
     if (!canCreateSupplier) return;
     setFieldErrors({});
-    setFormMode("add");
+    setPendingDelete(null);
     setSelectedSupplierId(null);
+    setSelectedSupplier(null);
     setFormData(EMPTY_FORM);
     setInitialFormData(EMPTY_FORM);
-    setShowForm(true);
+    setPanelMode("create");
   };
 
-const openEdit = async (supplierId: string) => {
-    if (!canUpdateSupplier) return;
+  const openView = async (supplierId: string) => {
+    const listRecord = suppliers.find((supplier) => supplier.supplier_id === supplierId) ?? null;
     setFieldErrors({});
-    setFormMode("edit");
+    setPendingDelete(null);
     setSelectedSupplierId(supplierId);
-    setShowForm(true);
-    setFormLoading(true);
-    try {
-      const record = await getSupplierById(supplierId);
-      const nextForm = recordToForm(record);
-      setFormData(nextForm);
-      setInitialFormData(nextForm);
-    } catch (error) {
-      const mapped = mapAxiosError(error);
-      toast.error(mapped.message);
-      setShowForm(false);
-    } finally {
-      setFormLoading(false);
-    }
+    setSelectedSupplier(listRecord);
+    setPanelMode("view");
+    await fetchSupplierDetail(supplierId);
   };
 
-  const openView = (supplierId: string) => {
-    setDetailSupplierId(supplierId);
-    setShowSupplierDetail(true);
+  const openEdit = async (supplierId: string) => {
+    if (!canUpdateSupplier) return;
+    const listRecord = suppliers.find((supplier) => supplier.supplier_id === supplierId) ?? null;
+    setFieldErrors({});
+    setPendingDelete(null);
+    setSelectedSupplierId(supplierId);
+    setSelectedSupplier(listRecord);
+    setPanelMode("edit");
+    const detail = await fetchSupplierDetail(supplierId);
+    if (!detail) {
+      closePanel();
+      return;
+    }
+    const nextForm = recordToForm(detail);
+    setFormData(nextForm);
+    setInitialFormData(nextForm);
+  };
+
+  const switchToEdit = () => {
+    if (!selectedSupplier || !canUpdateSupplier) return;
+    setFieldErrors({});
+    setPendingDelete(null);
+    const nextForm = recordToForm(selectedSupplier);
+    setFormData(nextForm);
+    setInitialFormData(nextForm);
+    setPanelMode("edit");
+  };
+
+  const handleCancelForm = () => {
+    if (submitting) return;
+    discardCurrentDraft();
+    setPendingDraft(null);
+    setFieldErrors({});
+    if (panelMode === "edit" && selectedSupplier) {
+      setFormData(recordToForm(selectedSupplier));
+      setInitialFormData(recordToForm(selectedSupplier));
+      setPanelMode("view");
+      return;
+    }
+    closePanel();
   };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (submitting) return;
     if (lookupError) return;
+    if (panelMode !== "create" && panelMode !== "edit") return;
 
     setFieldErrors({});
 
@@ -422,9 +518,12 @@ const openEdit = async (supplierId: string) => {
 
     setSubmitting(true);
     try {
-      if (formMode === "add") {
-        await createSupplier(buildCreatePayload(formData, currentActorId));
+      if (panelMode === "create") {
+        const created = await createSupplier(buildCreatePayload(formData, currentActorId));
         toast.success("Supplier created successfully");
+        if (activeDraftKey) clearDraft(activeDraftKey);
+        setSelectedSupplier(created);
+        closePanel();
       } else {
         if (!selectedSupplierId) {
           toast.error("Missing supplier id");
@@ -433,14 +532,21 @@ const openEdit = async (supplierId: string) => {
         const payload = buildUpdatePayload(initialFormData, formData, currentActorId);
         if (Object.keys(payload).length === 0) {
           toast.message("No changes to save");
+          if (activeDraftKey) clearDraft(activeDraftKey);
+          setPendingDraft(null);
+          setPanelMode("view");
         } else {
-          await updateSupplier(selectedSupplierId, payload);
+          const updated = await updateSupplier(selectedSupplierId, payload);
           toast.success("Supplier updated successfully");
+          if (activeDraftKey) clearDraft(activeDraftKey);
+          setPendingDraft(null);
+          setSelectedSupplier(updated);
+          setInitialFormData(recordToForm(updated));
+          setFormData(recordToForm(updated));
+          setPanelMode("view");
         }
       }
 
-      if (activeDraftKey) clearDraft(activeDraftKey);
-      setShowForm(false);
       await reloadSuppliers();
     } catch (error) {
       const mapped = mapAxiosError(error);
@@ -453,20 +559,21 @@ const openEdit = async (supplierId: string) => {
 
   const requestDelete = (supplier: SupplierRecord) => {
     if (!canDeleteSupplier) return;
-    setDeleteTarget(supplier);
-    setShowDelete(true);
+    setSelectedSupplierId(supplier.supplier_id);
+    setSelectedSupplier(supplier);
+    setPanelMode("view");
+    setPendingDelete(supplier);
   };
 
   const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    if (submitting) return;
+    const target = pendingDelete ?? selectedSupplier;
+    if (!target || submitting) return;
     setSubmitting(true);
     try {
-      await deleteSupplier(deleteTarget.supplier_id);
-      setSuppliers((previous) => previous.filter((item) => item.supplier_id !== deleteTarget.supplier_id));
+      await deleteSupplier(target.supplier_id);
+      setSuppliers((previous) => previous.filter((item) => item.supplier_id !== target.supplier_id));
       toast.success("Supplier deleted successfully");
-      setShowDelete(false);
-      setDeleteTarget(null);
+      closePanel();
     } catch (error) {
       const mapped = mapAxiosError(error);
       toast.error(mapped.message);
@@ -475,18 +582,15 @@ const openEdit = async (supplierId: string) => {
     }
   };
 
-  const renderError = (key: keyof SupplierFormState) =>
-    fieldErrors[key] ? <p className="text-xs text-red-600">{fieldErrors[key]}</p> : null;
-
-  const optionalCsv = (value: string | undefined): string | undefined => {
-    const trimmed = (value ?? "").trim();
-    return trimmed.length ? trimmed : undefined;
+  const handleClearFilters = () => {
+    setSearch("");
+    setSupplierTypeFilter("");
+    void reloadSuppliers();
   };
 
   const handleExport = async () => {
     if (!canExportReport) return;
     try {
-      // Fetch ALL supplier data from the export endpoint
       const allSuppliers = await exportAllSuppliers();
 
       if (!allSuppliers || allSuppliers.length === 0) {
@@ -494,16 +598,13 @@ const openEdit = async (supplierId: string) => {
         return;
       }
 
-      // Get all keys from the first object to use as headers
       const firstRecord = allSuppliers[0];
       const headers = Object.keys(firstRecord);
-
-      // Extract all values for each record
       const rows = allSuppliers.map((supplier) =>
         headers.map((key) => {
           const value = (supplier as unknown as Record<string, unknown>)[key];
           return value === null || value === undefined ? "" : String(value);
-        })
+        }),
       );
 
       downloadCsv(`suppliers-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
@@ -514,364 +615,237 @@ const openEdit = async (supplierId: string) => {
     }
   };
 
+  const renderFieldError = (key: SupplierFormKey) =>
+    fieldErrors[key] ? <p className="text-xs text-red-600">{fieldErrors[key]}</p> : null;
+
   const headerStats = buildPageHeaderStats(header.stats, {
     total: suppliers.length,
-    filtered: suppliers.length,
+    filtered: filteredSuppliers.length,
   });
+
+  const activeFilters = [
+    ...(search.trim()
+      ? [{ key: "search", label: `Search: ${search.trim()}`, onRemove: () => {
+          setSearch("");
+          void reloadSuppliers();
+        } }]
+      : []),
+    ...(supplierTypeFilter
+      ? [{ key: "type", label: `Type: ${findLookupLabel(supplierTypeOptions, supplierTypeFilter)}`, onRemove: () => setSupplierTypeFilter("") }]
+      : []),
+  ];
 
   return (
     <div className={PAGE_LAYOUT_SHELL_CLASS}>
       <CommonPageHeader
         breadcrumbs={header.breadcrumbs}
         sectionLabel={header.sectionLabel}
-        title={header.title}
-        subtitle={header.subtitle}
-        search={header.searchPlaceholder ? {
-          value: search,
-          placeholder: header.searchPlaceholder,
-          onChange: setSearch,
-          onClear: () => setSearch(""),
-          disabled: loadingList,
-        } : undefined}
+        title="Supplier Management"
+        subtitle="Manage supplier master data, contacts, addresses, and evaluation history"
         stats={headerStats}
-        primaryAction={header.primaryAction && canCreateSupplier ? { ...header.primaryAction, onClick: openCreate, disabled: loadingList } : undefined}
-        secondaryActions={[
-          ...(canCreateSupplier ? [{
-            ...(header.secondaryActions?.[0] ?? { key: "import", label: "Import", variant: "secondary" }),
-            onClick: () => setImportOpen(true),
-            disabled: loadingList,
-          }] : []),
-          ...(canExportReport ? [{
-            ...(header.secondaryActions?.[1] ?? { key: "export", label: "Export", variant: "secondary" }),
-            onClick: () => void handleExport(),
-            disabled: loadingList || suppliers.length === 0,
-          }] : []),
-          {
-            ...(header.secondaryActions?.[2] ?? { key: "reload", label: "Reload", variant: "ghost" }),
-            onClick: () => void reloadSuppliers(),
-            disabled: loadingList,
-          },
-        ]}
+        rightSlot={
+          <div className="flex flex-wrap items-center gap-2">
+            <PermissionGuard permission="SUPPLIER_CREATE">
+              <Button type="button" variant="secondary" size="sm" onClick={() => setImportOpen(true)} disabled={loadingList}>
+                <Upload className="h-4 w-4" />
+                Import
+              </Button>
+            </PermissionGuard>
+            <PermissionGuard permission="REPORT_EXPORT">
+              <Button type="button" variant="secondary" size="sm" onClick={() => void handleExport()} disabled={loadingList || suppliers.length === 0}>
+                <Download className="h-4 w-4" />
+                Export All CSV
+              </Button>
+            </PermissionGuard>
+            <Button type="button" variant="ghost" size="sm" onClick={() => void reloadSuppliers()} disabled={loadingList}>
+              <RefreshCw className="h-4 w-4" />
+              Reload
+            </Button>
+            <PermissionGuard permission="SUPPLIER_CREATE">
+              <Button type="button" size="sm" onClick={openCreate} disabled={loadingList}>
+                <Plus className="h-4 w-4" />
+                Add Supplier
+              </Button>
+            </PermissionGuard>
+          </div>
+        }
       />
 
       <div className={PAGE_CONTENT_CLASS}>
-        <Card>
-          <CardBody className="space-y-4 pt-6">
-            <div className="rounded-xl border border-slate-200 overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Supplier Name</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>City</TableHead>
-                    <TableHead>State</TableHead>
-                    <TableHead>Contact Name</TableHead>
-                    <TableHead>Contact Email</TableHead>
-                    <TableHead>Contact Phone</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginatedSuppliers.map((supplier) => (
-                    <TableRow key={supplier.supplier_id}>
-                      <TableCell className="font-medium text-slate-900">{supplier.supplier_name}</TableCell>
-                      <TableCell>{supplier.supplier_type ?? "-"}</TableCell>
-                      <TableCell>{supplier.supplier_city ?? "-"}</TableCell>
-                      <TableCell>{supplier.supplier_state ?? "-"}</TableCell>
-                      <TableCell>{supplier.contact_name ?? "-"}</TableCell>
-                      <TableCell className="font-mono text-xs">{supplier.contact_email ?? "-"}</TableCell>
-                      <TableCell>{supplier.contact_phone ?? "-"}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openView(supplier.supplier_id)}
-                            title="View"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                              />
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                              />
-                            </svg>
-                          </Button>
-                          {canUpdateSupplier ? <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => void openEdit(supplier.supplier_id)}
-                            title="Edit"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                              />
-                            </svg>
-                          </Button> : null}
-                          {canDeleteSupplier ? <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => requestDelete(supplier)}
-                            title="Delete"
-                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </Button> : null}
+        <FilterBar
+          activeFilters={activeFilters}
+          onClearAll={activeFilters.length ? handleClearFilters : undefined}
+        >
+          <div className="min-w-72 flex-1">
+            <SearchInput
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onClear={() => {
+                setSearch("");
+                void reloadSuppliers();
+              }}
+              placeholder="Search by name, code, contact, email, or type..."
+              disabled={loadingList}
+              className="h-10"
+            />
+          </div>
+          <div className="w-full sm:w-64">
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Supplier Type</label>
+            <select
+              value={supplierTypeFilter}
+              onChange={(event) => {
+                setSupplierTypeFilter(event.target.value);
+                setPage(1);
+              }}
+              className={selectClassName}
+              disabled={lookupLoading}
+            >
+              <option value="">All supplier types</option>
+              {supplierTypeOptions.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {option.value}
+                </option>
+              ))}
+            </select>
+          </div>
+        </FilterBar>
+
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Supplier Directory</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                {filteredSuppliers.length} suppliers visible from {suppliers.length} loaded records.
+              </p>
+            </div>
+            {filteredSuppliers.length > 0 ? (
+              <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
+            ) : null}
+          </div>
+
+          {loadingList ? (
+            <div className="px-4 py-12 text-center text-sm text-slate-500">Loading suppliers...</div>
+          ) : filteredSuppliers.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                title="No suppliers found"
+                description={search.trim() || supplierTypeFilter ? "Adjust the filters to find supplier records." : "Create a supplier to start building the supplier master."}
+              />
+            </div>
+          ) : (
+            <Table containerClassName="max-h-[62vh]">
+              <TableHeader>
+                <TableRow className="bg-slate-50">
+                  <TableHead className="px-4 font-semibold">Supplier Code</TableHead>
+                  <TableHead className="px-4 font-semibold">Supplier Name</TableHead>
+                  <TableHead className="px-4 font-semibold">Type</TableHead>
+                  <TableHead className="px-4 font-semibold">Contact</TableHead>
+                  <TableHead className="px-4 font-semibold">Location</TableHead>
+                  <TableHead className="px-4 font-semibold">Status</TableHead>
+                  <TableHead className="px-4 text-right font-semibold">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paginatedSuppliers.map((supplier) => (
+                  <TableRow key={supplier.supplier_id} className="hover:bg-slate-50">
+                    <TableCell className="px-4 align-top">
+                      <span className="font-mono text-xs font-semibold text-slate-700" title={supplierCode(supplier)}>
+                        {shortSupplierCode(supplier)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="px-4 align-top">
+                      <div className="font-medium text-slate-900">{supplier.supplier_name}</div>
+                      <div className="mt-1 text-xs text-slate-500">Enrolled {formatDate(supplier.enrolled_dt)}</div>
+                    </TableCell>
+                    <TableCell className="px-4 align-top">{findLookupLabel(supplierTypeOptions, supplier.supplier_type)}</TableCell>
+                    <TableCell className="px-4 align-top">
+                      <div className="space-y-1">
+                        <div className="text-sm text-slate-900">{formatValue(supplier.contact_name)}</div>
+                        <div className="font-mono text-xs text-slate-500">{formatValue(supplier.contact_email)}</div>
+                        <div className="text-xs text-slate-500">{formatValue(supplier.contact_phone)}</div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 align-top">
+                      <div className="space-y-1">
+                        <div className="text-sm text-slate-900">{formatValue(supplier.supplier_city)}</div>
+                        <div className="text-xs text-slate-500">
+                          {[supplier.supplier_state, findLookupLabel(countryOptions, supplier.supplier_country)]
+                            .filter((value) => value && value !== "-")
+                            .join(", ") || "-"}
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-
-                  {!loadingList && paginatedSuppliers.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={8} className="text-center text-sm text-slate-500 py-8">
-                        {search.trim() ? "No suppliers found for this search." : "No suppliers found."}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </CardBody>
-
-          <CardFooter className="justify-between">
-            <div className="text-sm text-slate-500">
-              Total: <span className="font-medium text-slate-700">{suppliers.length}</span>
-            </div>
-            <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
-          </CardFooter>
-        </Card>
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-4 align-top">
+                      <StatusBadge status="active" />
+                    </TableCell>
+                    <TableCell className="px-4 align-top text-right">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button type="button" variant="ghost" size="sm" onClick={() => void openView(supplier.supplier_id)}>
+                          <Eye className="h-4 w-4" />
+                          View
+                        </Button>
+                        <PermissionGuard permission="SUPPLIER_UPDATE">
+                          <Button type="button" variant="ghost" size="sm" onClick={() => void openEdit(supplier.supplier_id)} disabled={!canUpdateSupplier}>
+                            <Edit3 className="h-4 w-4" />
+                            Edit
+                          </Button>
+                        </PermissionGuard>
+                        <PermissionGuard permission="SUPPLIER_DELETE">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                            onClick={() => requestDelete(supplier)}
+                            disabled={!canDeleteSupplier}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </Button>
+                        </PermissionGuard>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </section>
       </div>
 
-      <Modal
-        open={showForm}
-        onClose={handleRequestClose}
-        title={formMode === "add" ? "Create Supplier" : "Edit Supplier"}
-        description={formMode === "add" ? "Enter supplier details." : "Update supplier details (only changed fields are sent)."}
-        size="lg"
-        closeButtonTooltip="Close and save progress as draft"
-        footer={
-          <>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button type="button" variant="ghost" disabled={submitting} onClick={handleCancel}>
-                  Cancel
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent sideOffset={6}>Discard changes and close the form</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={submitting}
-                  onClick={() => saveCurrentDraft({ force: true, toasts: true })}
-                >
-                  Save Draft
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent sideOffset={6}>Save current progress without submitting</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="submit"
-                  form="supplier-form"
-                  loading={submitting}
-                  disabled={formLoading || submitting || lookupLoading || lookupError}
-                >
-                  {formMode === "add" ? "Create" : "Save"}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent sideOffset={6}>Create record and save to database</TooltipContent>
-            </Tooltip>
-          </>
-        }
-      >
-        {formLoading ? (
-          <div className="text-sm text-slate-600">Loading supplier...</div>
-        ) : (
-          <form id="supplier-form" className="grid grid-cols-2 gap-4" onSubmit={(event) => void handleSubmit(event)}>
-            <div className="space-y-1">
-              <Input
-                label="Supplier Name"
-                value={formData.supplier_name}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_name: event.target.value }))}
-                required
-              />
-              {renderError("supplier_name")}
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Supplier Type</label>
-              <select
-                className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm bg-input-background disabled:opacity-50 disabled:cursor-not-allowed"
-                value={formData.supplier_type}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_type: event.target.value }))}
-                disabled={lookupLoading || lookupError}
-              >
-                <option value="">Select supplier type</option>
-                {supplierTypeOptions.map((item) => (
-                  <option key={item.code} value={item.code}>
-                    {item.value}
-                  </option>
-                ))}
-              </select>
-              {renderError("supplier_type")}
-            </div>
-
-            <div className="col-span-2 space-y-1">
-              <Input
-                label="Address Line 1"
-                value={formData.supplier_add1}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_add1: event.target.value }))}
-              />
-              {renderError("supplier_add1")}
-            </div>
-
-            <div className="col-span-2 space-y-1">
-              <Input
-                label="Address Line 2"
-                value={formData.supplier_add2}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_add2: event.target.value }))}
-              />
-              {renderError("supplier_add2")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="City"
-                value={formData.supplier_city}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_city: event.target.value }))}
-              />
-              {renderError("supplier_city")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="Pincode"
-                value={formData.supplier_pincode}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_pincode: event.target.value }))}
-              />
-              {renderError("supplier_pincode")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="State"
-                value={formData.supplier_state}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_state: event.target.value }))}
-              />
-              {renderError("supplier_state")}
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Country</label>
-              <select
-                className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm bg-input-background disabled:opacity-50 disabled:cursor-not-allowed"
-                value={formData.supplier_country}
-                onChange={(event) => setFormData((previous) => ({ ...previous, supplier_country: event.target.value }))}
-                disabled={lookupLoading || lookupError}
-              >
-                <option value="">Select country</option>
-                {countryOptions.map((item) => (
-                  <option key={item.code} value={item.code}>
-                    {item.value}
-                  </option>
-                ))}
-              </select>
-              {renderError("supplier_country")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="Contact Name"
-                value={formData.contact_name}
-                onChange={(event) => setFormData((previous) => ({ ...previous, contact_name: event.target.value }))}
-              />
-              {renderError("contact_name")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="Contact Email"
-                type="email"
-                value={formData.contact_email}
-                onChange={(event) => setFormData((previous) => ({ ...previous, contact_email: event.target.value }))}
-              />
-              {renderError("contact_email")}
-            </div>
-
-            <div className="space-y-1">
-              <Input
-                label="Contact Phone"
-                value={formData.contact_phone}
-                onChange={(event) => setFormData((previous) => ({ ...previous, contact_phone: event.target.value }))}
-              />
-              {renderError("contact_phone")}
-            </div>
-          </form>
-        )}
-      </Modal>
-
-      <RestoreDraftDialog
-        open={restoreDraftOpen}
-        onDiscard={() => {
-          if (!activeDraftKey) return;
-          clearDraft(activeDraftKey);
+      <SupplierPanel
+        canDeleteSupplier={canDeleteSupplier}
+        canUpdateSupplier={canUpdateSupplier}
+        countryOptions={countryOptions}
+        detailLoading={detailLoading}
+        fieldErrors={fieldErrors}
+        formData={formData}
+        lookupError={lookupError}
+        lookupLoading={lookupLoading}
+        mode={panelMode}
+        pendingDelete={pendingDelete}
+        pendingDraft={pendingDraft}
+        renderFieldError={renderFieldError}
+        selectedSupplier={selectedSupplier}
+        setFormData={setFormData}
+        submitting={submitting}
+        supplierTypeOptions={supplierTypeOptions}
+        onCancelForm={handleCancelForm}
+        onCancelDelete={() => setPendingDelete(null)}
+        onClose={handlePanelClose}
+        onConfirmDelete={() => void confirmDelete()}
+        onDiscardDraft={() => {
+          if (activeDraftKey) clearDraft(activeDraftKey);
           setPendingDraft(null);
-          setRestoreDraftOpen(false);
         }}
-        onRestore={() => {
+        onRequestDelete={() => selectedSupplier && setPendingDelete(selectedSupplier)}
+        onRestoreDraft={() => {
           if (pendingDraft) setFormData(pendingDraft);
-          setRestoreDraftOpen(false);
+          setPendingDraft(null);
         }}
-      />
-
-      <ConfirmDialog
-        open={showDelete}
-        onConfirm={() => void confirmDelete()}
-        onCancel={() => {
-          if (!submitting) setShowDelete(false);
-        }}
-        title="Delete this supplier?"
-        message={`"${deleteTarget?.supplier_name ?? "Selected supplier"}" will be permanently removed.`}
-        confirmLabel={submitting ? "Deleting..." : "Delete Supplier"}
+        onSaveDraft={() => saveCurrentDraft({ force: true, toasts: true })}
+        onSubmit={handleSubmit}
+        onSwitchToEdit={switchToEdit}
       />
 
       <CsvImportModal<CreateSupplierPayload>
@@ -894,7 +868,7 @@ const openEdit = async (supplierId: string) => {
         ]}
         initialCsvText={importInitialText ?? undefined}
         onPickFile={() => importFileRef.current?.click()}
-        parseRow={(row, rowNumber) => {
+        parseRow={(row) => {
           const supplierName = (row["Supplier Name"] ?? "").trim();
           if (!supplierName) {
             return { errors: ["Supplier Name is required"] };
@@ -939,16 +913,473 @@ const openEdit = async (supplierId: string) => {
         }}
       />
 
-<Toaster position="top-right" richColors />
+      <Toaster position="top-right" richColors />
+    </div>
+  );
+}
 
-      <SupplierDetailDrawer
-        open={showSupplierDetail}
-        supplierId={detailSupplierId}
-        onClose={() => {
-          setShowSupplierDetail(false);
-          setDetailSupplierId(null);
-        }}
-      />
+interface SupplierPanelProps {
+  canDeleteSupplier: boolean;
+  canUpdateSupplier: boolean;
+  countryOptions: LookupOption[];
+  detailLoading: boolean;
+  fieldErrors: FieldErrors;
+  formData: SupplierFormState;
+  lookupError: boolean;
+  lookupLoading: boolean;
+  mode: PanelMode;
+  pendingDelete: SupplierRecord | null;
+  pendingDraft: SupplierFormState | null;
+  renderFieldError: (key: SupplierFormKey) => React.ReactNode;
+  selectedSupplier: SupplierRecord | null;
+  setFormData: React.Dispatch<React.SetStateAction<SupplierFormState>>;
+  submitting: boolean;
+  supplierTypeOptions: LookupOption[];
+  onCancelForm: () => void;
+  onCancelDelete: () => void;
+  onClose: () => void;
+  onConfirmDelete: () => void;
+  onDiscardDraft: () => void;
+  onRequestDelete: () => void;
+  onRestoreDraft: () => void;
+  onSaveDraft: () => void;
+  onSubmit: (event: FormEvent) => void;
+  onSwitchToEdit: () => void;
+}
+
+function SupplierPanel({
+  canDeleteSupplier,
+  canUpdateSupplier,
+  countryOptions,
+  detailLoading,
+  fieldErrors,
+  formData,
+  lookupError,
+  lookupLoading,
+  mode,
+  pendingDelete,
+  pendingDraft,
+  renderFieldError,
+  selectedSupplier,
+  setFormData,
+  submitting,
+  supplierTypeOptions,
+  onCancelForm,
+  onCancelDelete,
+  onClose,
+  onConfirmDelete,
+  onDiscardDraft,
+  onRequestDelete,
+  onRestoreDraft,
+  onSaveDraft,
+  onSubmit,
+  onSwitchToEdit,
+}: SupplierPanelProps) {
+  const isFormMode = mode === "create" || mode === "edit";
+  const title = mode === "create" ? "Add Supplier" : mode === "edit" ? "Edit Supplier" : "Supplier details";
+  const description = mode === "create"
+    ? "Create supplier master data, contact, and address details."
+    : mode === "edit"
+      ? "Update supplier profile, contact, and address details."
+      : "Review supplier master data and related evaluation navigation.";
+
+  return (
+    <RightPanel
+      open={mode !== null}
+      title={title}
+      description={description}
+      onClose={onClose}
+      widthClassName="max-w-3xl"
+      footer={
+        isFormMode ? (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onCancelForm} disabled={submitting}>
+              <X className="h-4 w-4" />
+              Cancel
+            </Button>
+            <Button type="button" variant="secondary" onClick={onSaveDraft} disabled={submitting}>
+              Save Draft
+            </Button>
+            <Button type="submit" form="supplier-form" loading={submitting} disabled={detailLoading || lookupLoading || lookupError}>
+              <Save className="h-4 w-4" />
+              {mode === "create" ? "Create Supplier" : "Save Changes"}
+            </Button>
+          </div>
+        ) : selectedSupplier ? (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => navigateToSupplierEvaluations(undefined, selectedSupplier.supplier_id)}>
+              View Supplier Evaluations
+            </Button>
+            <PermissionGuard permission="SUPPLIER_UPDATE">
+              <Button type="button" onClick={onSwitchToEdit} disabled={!canUpdateSupplier || detailLoading}>
+                <Edit3 className="h-4 w-4" />
+                Edit
+              </Button>
+            </PermissionGuard>
+          </div>
+        ) : null
+      }
+    >
+      {detailLoading ? (
+        <div className="py-10 text-center text-sm text-slate-500">Loading supplier...</div>
+      ) : isFormMode ? (
+        <SupplierForm
+          fieldErrors={fieldErrors}
+          formData={formData}
+          lookupError={lookupError}
+          lookupLoading={lookupLoading}
+          mode={mode}
+          countryOptions={countryOptions}
+          supplierTypeOptions={supplierTypeOptions}
+          renderFieldError={renderFieldError}
+          setFormData={setFormData}
+          onDiscardDraft={onDiscardDraft}
+          onRestoreDraft={onRestoreDraft}
+          onSubmit={onSubmit}
+          pendingDraft={pendingDraft}
+        />
+      ) : selectedSupplier ? (
+        <SupplierDetail
+          canDeleteSupplier={canDeleteSupplier}
+          countryOptions={countryOptions}
+          pendingDelete={pendingDelete}
+          selectedSupplier={selectedSupplier}
+          submitting={submitting}
+          supplierTypeOptions={supplierTypeOptions}
+          onCancelDelete={onCancelDelete}
+          onConfirmDelete={onConfirmDelete}
+          onRequestDelete={onRequestDelete}
+        />
+      ) : (
+        <EmptyState title="No supplier selected" description="Choose a supplier row to view details." />
+      )}
+    </RightPanel>
+  );
+}
+
+interface SupplierFormProps {
+  countryOptions: LookupOption[];
+  fieldErrors: FieldErrors;
+  formData: SupplierFormState;
+  lookupError: boolean;
+  lookupLoading: boolean;
+  mode: SupplierFormMode;
+  pendingDraft: SupplierFormState | null;
+  renderFieldError: (key: SupplierFormKey) => React.ReactNode;
+  setFormData: React.Dispatch<React.SetStateAction<SupplierFormState>>;
+  supplierTypeOptions: LookupOption[];
+  onDiscardDraft: () => void;
+  onRestoreDraft: () => void;
+  onSubmit: (event: FormEvent) => void;
+}
+
+function SupplierForm({
+  countryOptions,
+  fieldErrors,
+  formData,
+  lookupError,
+  lookupLoading,
+  mode,
+  pendingDraft,
+  renderFieldError,
+  setFormData,
+  supplierTypeOptions,
+  onDiscardDraft,
+  onRestoreDraft,
+  onSubmit,
+}: SupplierFormProps) {
+  return (
+    <form id="supplier-form" className="space-y-5" onSubmit={onSubmit}>
+      {pendingDraft ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="min-w-48 flex-1">
+            <div className="font-semibold">You have an unsaved supplier draft. Restore it?</div>
+            <div className="text-xs opacity-80">Restoring replaces the current form values.</div>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={onDiscardDraft}>
+            Discard
+          </Button>
+          <Button type="button" size="sm" onClick={onRestoreDraft}>
+            Restore
+          </Button>
+        </div>
+      ) : null}
+
+      {lookupError ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          Dropdown values could not be loaded. Try reopening the panel.
+        </div>
+      ) : null}
+
+      <PanelSection title="Profile">
+        <div className="grid gap-4 md:grid-cols-2">
+          <ReadOnlyField label="Supplier Code" value={mode === "create" ? "Generated after save" : "System generated"} />
+          <div className="space-y-1">
+            <Input
+              label="Supplier Name"
+              value={formData.supplier_name}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_name: event.target.value }))}
+              required
+            />
+            {renderFieldError("supplier_name")}
+          </div>
+          <div className="space-y-1 md:col-span-2">
+            <label className="text-sm font-medium text-slate-700">Supplier Type / Classification</label>
+            <select
+              className={selectClassName}
+              value={formData.supplier_type}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_type: event.target.value }))}
+              disabled={lookupLoading || lookupError}
+            >
+              <option value="">Select supplier type</option>
+              {supplierTypeOptions.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.value}
+                </option>
+              ))}
+            </select>
+            {renderFieldError("supplier_type")}
+          </div>
+        </div>
+      </PanelSection>
+
+      <PanelSection title="Contact">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1">
+            <Input
+              label="Contact Person"
+              value={formData.contact_name}
+              onChange={(event) => setFormData((previous) => ({ ...previous, contact_name: event.target.value }))}
+            />
+            {renderFieldError("contact_name")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Email"
+              type="email"
+              value={formData.contact_email}
+              onChange={(event) => setFormData((previous) => ({ ...previous, contact_email: event.target.value }))}
+            />
+            {renderFieldError("contact_email")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Phone"
+              value={formData.contact_phone}
+              onChange={(event) => setFormData((previous) => ({ ...previous, contact_phone: event.target.value }))}
+            />
+            {renderFieldError("contact_phone")}
+          </div>
+        </div>
+      </PanelSection>
+
+      <PanelSection title="Address">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1 md:col-span-2">
+            <Input
+              label="Address Line 1"
+              value={formData.supplier_add1}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_add1: event.target.value }))}
+            />
+            {renderFieldError("supplier_add1")}
+          </div>
+          <div className="space-y-1 md:col-span-2">
+            <Input
+              label="Address Line 2"
+              value={formData.supplier_add2}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_add2: event.target.value }))}
+            />
+            {renderFieldError("supplier_add2")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="City"
+              value={formData.supplier_city}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_city: event.target.value }))}
+            />
+            {renderFieldError("supplier_city")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="State"
+              value={formData.supplier_state}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_state: event.target.value }))}
+            />
+            {renderFieldError("supplier_state")}
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Country</label>
+            <select
+              className={selectClassName}
+              value={formData.supplier_country}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_country: event.target.value }))}
+              disabled={lookupLoading || lookupError}
+            >
+              <option value="">Select country</option>
+              {countryOptions.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.value}
+                </option>
+              ))}
+            </select>
+            {renderFieldError("supplier_country")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Postal Code"
+              value={formData.supplier_pincode}
+              onChange={(event) => setFormData((previous) => ({ ...previous, supplier_pincode: event.target.value }))}
+            />
+            {renderFieldError("supplier_pincode")}
+          </div>
+        </div>
+      </PanelSection>
+
+      {fieldErrors.form ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{fieldErrors.form}</div> : null}
+    </form>
+  );
+}
+
+interface SupplierDetailProps {
+  canDeleteSupplier: boolean;
+  countryOptions: LookupOption[];
+  pendingDelete: SupplierRecord | null;
+  selectedSupplier: SupplierRecord;
+  submitting: boolean;
+  supplierTypeOptions: LookupOption[];
+  onCancelDelete: () => void;
+  onConfirmDelete: () => void;
+  onRequestDelete: () => void;
+}
+
+function SupplierDetail({
+  canDeleteSupplier,
+  countryOptions,
+  pendingDelete,
+  selectedSupplier,
+  submitting,
+  supplierTypeOptions,
+  onCancelDelete,
+  onConfirmDelete,
+  onRequestDelete,
+}: SupplierDetailProps) {
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="font-mono text-xs font-semibold text-slate-500">{supplierCode(selectedSupplier)}</div>
+            <h3 className="mt-1 text-lg font-semibold text-slate-900">{selectedSupplier.supplier_name}</h3>
+            <p className="mt-1 text-sm text-slate-500">{findLookupLabel(supplierTypeOptions, selectedSupplier.supplier_type)}</p>
+          </div>
+          <StatusBadge status="active" />
+        </div>
+      </div>
+
+      {pendingDelete ? (
+        <ConfirmStrip
+          tone="danger"
+          title={`Delete ${selectedSupplier.supplier_name}?`}
+          message="This uses the existing supplier delete API and cannot be undone from this page."
+          confirmLabel={submitting ? "Deleting..." : "Delete Supplier"}
+          onConfirm={onConfirmDelete}
+          onCancel={onCancelDelete}
+          disabled={submitting}
+        />
+      ) : null}
+
+      <PanelSection title="Profile">
+        <DetailGrid
+          items={[
+            ["Supplier Code", supplierCode(selectedSupplier)],
+            ["Supplier Name", selectedSupplier.supplier_name],
+            ["Supplier Type", findLookupLabel(supplierTypeOptions, selectedSupplier.supplier_type)],
+            ["Status", "Active"],
+            ["Enrolled Date", formatDate(selectedSupplier.enrolled_dt)],
+            ["Created By", selectedSupplier.created_by ?? "-"],
+            ["Modified By", selectedSupplier.modified_by ?? "-"],
+          ]}
+        />
+      </PanelSection>
+
+      <PanelSection title="Contact">
+        <DetailGrid
+          items={[
+            ["Contact Person", selectedSupplier.contact_name ?? "-"],
+            ["Email", selectedSupplier.contact_email ?? "-"],
+            ["Phone", selectedSupplier.contact_phone ?? "-"],
+          ]}
+        />
+      </PanelSection>
+
+      <PanelSection title="Address">
+        <DetailGrid
+          items={[
+            ["Address Line 1", selectedSupplier.supplier_add1 ?? "-"],
+            ["Address Line 2", selectedSupplier.supplier_add2 ?? "-"],
+            ["City", selectedSupplier.supplier_city ?? "-"],
+            ["State", selectedSupplier.supplier_state ?? "-"],
+            ["Country", findLookupLabel(countryOptions, selectedSupplier.supplier_country)],
+            ["Postal Code", selectedSupplier.supplier_pincode ?? "-"],
+          ]}
+        />
+      </PanelSection>
+
+      <PanelSection title="Evaluations">
+        <div className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-slate-600">Evaluation history is managed in Supplier Evaluations.</p>
+          <Button type="button" variant="secondary" onClick={() => navigateToSupplierEvaluations(undefined, selectedSupplier.supplier_id)}>
+            View Supplier Evaluations
+          </Button>
+        </div>
+      </PanelSection>
+
+      <PermissionGuard permission="SUPPLIER_DELETE">
+        <div className="border-t border-slate-200 pt-4">
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={onRequestDelete}
+            disabled={!canDeleteSupplier || submitting}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete Supplier
+          </Button>
+        </div>
+      </PermissionGuard>
+    </div>
+  );
+}
+
+function PanelSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function DetailGrid({ items }: { items: Array<[string, React.ReactNode]> }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {items.map(([label, value]) => (
+        <div key={label} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="text-xs font-medium text-slate-500">{label}</div>
+          <div className="mt-1 break-words text-sm font-medium text-slate-900">{value || "-"}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReadOnlyField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1.5 text-sm font-medium text-slate-700">{label}</div>
+      <div className="flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">
+        {value}
+      </div>
     </div>
   );
 }

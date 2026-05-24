@@ -5,6 +5,7 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Modal } from "../ui/Modal";
 import { createRelease } from "../../../services/release.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import {
   buildCreateReleasePayload,
   DOCUMENTATION_MODE_MANUAL,
@@ -26,8 +27,6 @@ interface CreateReleaseModalProps {
   onCreated: () => Promise<void> | void;
 }
 
-const DEFAULT_CREATED_BY = "admin";
-
 export function CreateReleaseModal({
   open,
   assetId,
@@ -35,6 +34,8 @@ export function CreateReleaseModal({
   onClose,
   onCreated,
 }: CreateReleaseModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [formData, setFormData] = useState<ReleaseFormState>(EMPTY_RELEASE_FORM);
   const [fieldErrors, setFieldErrors] = useState<ReleaseFieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
@@ -68,7 +69,7 @@ export function CreateReleaseModal({
     setSubmitting(true);
     setFieldErrors({});
     try {
-      await createRelease(assetId, buildCreateReleasePayload(formData, DEFAULT_CREATED_BY));
+      await createRelease(assetId, buildCreateReleasePayload(formData, actorName));
       toast.success("Release created and impact assessment generated.");
       await onCreated();
       onClose();

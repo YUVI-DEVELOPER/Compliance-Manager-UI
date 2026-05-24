@@ -6,6 +6,7 @@ import { Modal } from "../ui/Modal";
 import { RestoreDraftDialog } from "../ui/RestoreDraftDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { clearDraft, isShallowDirtyTrimmed, loadDraft, saveDraft } from "../../utils/draftStorage";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption, LookupValue, getLookupValuesByMasterCode } from "../../services/lookupValue.service";
 import { OrgNode } from "../../../services/org.service";
 import { SupplierRecord } from "../../../services/supplier.service";
@@ -40,8 +41,6 @@ interface EditAssetModalProps {
   criticalities: LookupOption[];
   assetNatures: LookupOption[];
 }
-
-const DEFAULT_MODIFIED_BY = "admin";
 
 const mapAxiosError = (error: unknown): { message: string; fieldErrors?: AssetFieldErrors } => {
   if (!axios.isAxiosError(error)) {
@@ -90,6 +89,8 @@ export function EditAssetModal({
   criticalities,
   assetNatures,
 }: EditAssetModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [formData, setFormData] = useState<AssetFormState>(EMPTY_ASSET_FORM);
   const [initialFormData, setInitialFormData] = useState<AssetFormState>(EMPTY_ASSET_FORM);
   const [fieldErrors, setFieldErrors] = useState<AssetFieldErrors>({});
@@ -299,7 +300,7 @@ export function EditAssetModal({
       return;
     }
 
-    const payload = buildUpdateAssetPayload(initialFormData, formData, DEFAULT_MODIFIED_BY);
+    const payload = buildUpdateAssetPayload(initialFormData, formData, actorName);
     if (Object.keys(payload).length === 1 && payload.modified_by) {
       toast.message("No changes to save");
       return;

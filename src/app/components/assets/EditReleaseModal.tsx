@@ -5,6 +5,7 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Modal } from "../ui/Modal";
 import { getReleaseById, ReleaseRecord, updateRelease } from "../../../services/release.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import {
   buildUpdateReleasePayload,
   DOCUMENTATION_MODE_MANUAL,
@@ -27,14 +28,14 @@ interface EditReleaseModalProps {
   onUpdated: () => Promise<void> | void;
 }
 
-const DEFAULT_MODIFIED_BY = "admin";
-
 export function EditReleaseModal({
   open,
   releaseId,
   onClose,
   onUpdated,
 }: EditReleaseModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [release, setRelease] = useState<ReleaseRecord | null>(null);
   const [formData, setFormData] = useState<ReleaseFormState>(EMPTY_RELEASE_FORM);
   const [initialFormData, setInitialFormData] = useState<ReleaseFormState>(EMPTY_RELEASE_FORM);
@@ -99,7 +100,7 @@ export function EditReleaseModal({
       return;
     }
 
-    const payload = buildUpdateReleasePayload(initialFormData, formData, DEFAULT_MODIFIED_BY);
+    const payload = buildUpdateReleasePayload(initialFormData, formData, actorName);
     if (Object.keys(payload).length === 1 && payload.modified_by) {
       toast.message("No changes to save");
       return;

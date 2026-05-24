@@ -37,6 +37,7 @@ export function SearchableCombobox({
 }: SearchableComboboxProps) {
   const generatedId = React.useId();
   const inputId = id ?? generatedId;
+  const inputName = `cm-combobox-${inputId.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -85,7 +86,15 @@ export function SearchableCombobox({
       <div className="relative">
         <input
           id={inputId}
+          name={inputName}
           type="text"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
           role="combobox"
           aria-expanded={open}
           aria-autocomplete="list"

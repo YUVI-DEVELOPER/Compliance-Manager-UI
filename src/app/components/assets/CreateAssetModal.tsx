@@ -6,6 +6,7 @@ import { Modal } from "../ui/Modal";
 import { RestoreDraftDialog } from "../ui/RestoreDraftDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { clearDraft, isShallowDirtyTrimmed, loadDraft, saveDraft } from "../../utils/draftStorage";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption, LookupValue, getLookupValuesByMasterCode } from "../../services/lookupValue.service";
 import { OrgNode } from "../../../services/org.service";
 import { SupplierRecord } from "../../../services/supplier.service";
@@ -39,8 +40,6 @@ interface CreateAssetModalProps {
   criticalities: LookupOption[];
   assetNatures: LookupOption[];
 }
-
-const DEFAULT_CREATED_BY = "admin";
 
 const mapAxiosError = (error: unknown): { message: string; fieldErrors?: AssetFieldErrors } => {
   if (!axios.isAxiosError(error)) {
@@ -90,6 +89,8 @@ export function CreateAssetModal({
   criticalities,
   assetNatures,
 }: CreateAssetModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [formData, setFormData] = useState<AssetFormState>(EMPTY_ASSET_FORM);
   const [fieldErrors, setFieldErrors] = useState<AssetFieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
@@ -268,7 +269,7 @@ export function CreateAssetModal({
     setSubmitting(true);
     setFieldErrors({});
     try {
-      await createAsset(buildCreateAssetPayload(formData, DEFAULT_CREATED_BY));
+      await createAsset(buildCreateAssetPayload(formData, actorName));
       toast.success("Asset master record created successfully");
       clearDraft(draftKey);
       setFormData(EMPTY_ASSET_FORM);

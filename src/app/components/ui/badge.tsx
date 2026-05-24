@@ -46,6 +46,7 @@ function Badge({
 function StatusBadge({
   className,
   status = "active",
+  children,
   ...props
 }: React.ComponentProps<"span"> & { status?: "active" | "inactive" | "pending" | "error" }) {
   const statusStyles = {
@@ -72,7 +73,7 @@ function StatusBadge({
       )}
       {...props}
     >
-      {statusLabels[status]}
+      {children ?? statusLabels[status]}
     </span>
   );
 }

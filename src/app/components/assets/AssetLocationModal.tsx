@@ -5,6 +5,7 @@ import { Modal } from "../ui/Modal";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import {
   AssetLocationRecord,
   createAssetLocation,
@@ -30,9 +31,6 @@ interface AssetLocationModalProps {
   onClose: () => void;
   onSaved: () => Promise<void> | void;
 }
-
-const DEFAULT_CREATED_BY = "admin";
-const DEFAULT_MODIFIED_BY = "admin";
 
 const FieldError = ({ error }: { error?: string }) => (
   error ? <p className="text-xs text-red-600">{error}</p> : null
@@ -93,6 +91,8 @@ export function AssetLocationModal({
   onClose,
   onSaved,
 }: AssetLocationModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [formData, setFormData] = useState<AssetLocationFormState>(EMPTY_ASSET_LOCATION_FORM);
   const [initialFormData, setInitialFormData] = useState<AssetLocationFormState>(EMPTY_ASSET_LOCATION_FORM);
   const [fieldErrors, setFieldErrors] = useState<AssetLocationFieldErrors>({});
@@ -131,7 +131,7 @@ export function AssetLocationModal({
     setFieldErrors({});
     try {
       if (isEditMode) {
-        const payload = buildUpdateAssetLocationPayload(initialFormData, formData, DEFAULT_MODIFIED_BY);
+        const payload = buildUpdateAssetLocationPayload(initialFormData, formData, actorName);
         if (Object.keys(payload).length === 1) {
           toast.message("No location changes to save");
           setSubmitting(false);
@@ -140,7 +140,7 @@ export function AssetLocationModal({
         await updateAssetLocation(assetId, payload);
         toast.success("Asset location updated successfully");
       } else {
-        await createAssetLocation(assetId, buildCreateAssetLocationPayload(formData, DEFAULT_CREATED_BY));
+        await createAssetLocation(assetId, buildCreateAssetLocationPayload(formData, actorName));
         toast.success("Asset location created successfully");
       }
 

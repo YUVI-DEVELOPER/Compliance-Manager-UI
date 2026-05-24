@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
 import { QualificationDocumentRecord } from "../../../services/qualification-document.service";
-import { Badge } from "../ui/badge";
+import { Badge, StatusBadge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Table,
@@ -23,6 +23,13 @@ import {
 } from "./qualificationDocumentForm.shared";
 import { InternalDocumentViewerModal } from "./InternalDocumentViewerModal";
 
+const getQualificationStatusKind = (status?: string | null): "active" | "inactive" | "pending" | "error" => {
+  if (status === "ACCEPTED") return "active";
+  if (status === "REJECTED") return "error";
+  if (status === "IN_REVIEW" || status === "SUBMITTED" || status === "NEEDS_CLARIFICATION") return "pending";
+  return "inactive";
+};
+
 interface QualificationDocumentTableProps {
   documents: QualificationDocumentRecord[];
   loading: boolean;
@@ -30,6 +37,7 @@ interface QualificationDocumentTableProps {
   onDelete: (document: QualificationDocumentRecord) => void;
   canOpenRecord?: boolean;
   canDelete?: boolean;
+  canPreview?: boolean;
   emptyMessage?: string;
 }
 
@@ -40,6 +48,7 @@ export function QualificationDocumentTable({
   onDelete,
   canOpenRecord = true,
   canDelete: canDeleteDocuments = false,
+  canPreview = true,
   emptyMessage = "No supplier qualification documents registered yet.",
 }: QualificationDocumentTableProps) {
   const [previewDocument, setPreviewDocument] = useState<QualificationDocumentRecord | null>(null);
@@ -112,19 +121,19 @@ export function QualificationDocumentTable({
                     {formatQualificationDocumentDate(document.submission_date)}
                   </TableCell>
                   <TableCell className="align-top">
-                    <Badge
-                      variant="outline"
+                    <StatusBadge
+                      status={getQualificationStatusKind(document.status)}
                       className={getQualificationStatusBadgeClass(document.status)}
                     >
                       {formatQualificationStatus(document.status)}
-                    </Badge>
+                    </StatusBadge>
                   </TableCell>
                   <TableCell className="align-top whitespace-normal break-words text-slate-700">
                     {formatQualificationLinkedContext(document)}
                   </TableCell>
                   <TableCell className="align-top text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {safeExternalLink ? (
+                      {safeExternalLink && canPreview ? (
                         <Button
                           variant="ghost"
                           size="sm"

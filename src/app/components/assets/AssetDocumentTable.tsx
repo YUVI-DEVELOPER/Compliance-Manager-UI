@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { ExternalLink, Pencil, RotateCw, Trash2 } from "lucide-react";
-import { Badge } from "../ui/badge";
+import { Brain, ExternalLink, Pencil, RotateCw, Trash2 } from "lucide-react";
+import { Badge, StatusBadge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Table,
@@ -22,14 +22,25 @@ import {
 } from "./documentLinkForm.shared";
 import { InternalDocumentViewerModal } from "./InternalDocumentViewerModal";
 
+const getVectorizationStatusKind = (status?: string | null): "active" | "inactive" | "pending" | "error" => {
+  const normalized = status?.toUpperCase();
+  if (normalized === "COMPLETED") return "active";
+  if (normalized === "FAILED") return "error";
+  if (normalized === "PROCESSING" || normalized === "QUEUED" || normalized === "PENDING") return "pending";
+  return "inactive";
+};
+
 interface AssetDocumentTableProps {
   documents: DocumentLinkRecord[];
   loading: boolean;
   onEdit: (document: DocumentLinkRecord) => void;
   onDelete: (document: DocumentLinkRecord) => void;
   onReprocess?: (document: DocumentLinkRecord) => void;
+  onViewIntelligence?: (document: DocumentLinkRecord) => void;
   canUpdate?: boolean;
   canDelete?: boolean;
+  canPreview?: boolean;
+  canViewIntelligence?: boolean;
   sourceSystemOptions?: LookupOption[];
   emptyMessage?: string;
 }
@@ -40,8 +51,11 @@ export function AssetDocumentTable({
   onEdit,
   onDelete,
   onReprocess,
+  onViewIntelligence,
   canUpdate = false,
   canDelete = false,
+  canPreview = true,
+  canViewIntelligence = false,
   sourceSystemOptions = [],
   emptyMessage = "No documents linked for this asset. Add the first validated document.",
 }: AssetDocumentTableProps) {
@@ -88,6 +102,7 @@ export function AssetDocumentTable({
               const vectorizationJob = document.vectorization_job;
               const vectorizationLabel = formatVectorizationStatus(document.vectorization_status);
               const vectorizationTitle = vectorizationJob?.error_message || vectorizationLabel;
+              const hasDocumentIntelligenceTarget = Boolean(vectorizationJob?.rag_document_id);
 
               return (
                 <TableRow key={document.document_link_id} className="hover:bg-slate-50">
@@ -131,13 +146,13 @@ export function AssetDocumentTable({
                   </TableCell>
                   <TableCell className="align-top">
                     <div className="flex flex-col items-start gap-1.5">
-                      <Badge
-                        variant="outline"
+                      <StatusBadge
+                        status={getVectorizationStatusKind(document.vectorization_status)}
                         className={getVectorizationStatusBadgeClass(document.vectorization_status)}
                         title={vectorizationTitle}
                       >
                         {vectorizationLabel}
-                      </Badge>
+                      </StatusBadge>
                       {vectorizationJob?.chunk_count ? (
                         <span className="text-xs text-slate-500">{vectorizationJob.chunk_count} chunks</span>
                       ) : null}
@@ -169,10 +184,23 @@ export function AssetDocumentTable({
                           Reprocess
                         </Button>
                       ) : null}
+                      {canViewIntelligence && hasDocumentIntelligenceTarget && onViewIntelligence ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onViewIntelligence(document)}
+                          title="View in Document Intelligence"
+                          className="h-7 px-2 text-xs"
+                        >
+                          <Brain className="size-3.5" />
+                          Intelligence
+                        </Button>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
-                    {safeAccessUrl ? (
+                    {safeAccessUrl && canPreview ? (
                       <Button variant="ghost" size="sm" onClick={() => setPreviewDocument(document)} title="Open Document">
                         <ExternalLink className="size-4" />
                         Open

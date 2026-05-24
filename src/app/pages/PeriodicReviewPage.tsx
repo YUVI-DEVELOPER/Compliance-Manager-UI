@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Archive,
+  BellRing,
   CalendarClock,
   Check,
   CheckCircle2,
@@ -14,6 +16,7 @@ import {
   Gauge,
   History,
   Layers3,
+  ListChecks,
   Loader2,
   Pencil,
   PlayCircle,
@@ -33,10 +36,12 @@ import {
   AuditReviewJobCreatePayload,
   AuditReviewJobDetail,
   AuditReviewJobListItem,
+  AuditReviewJobStatus,
   AuditReviewMetadata,
   AuditReviewReportDetail,
   AuditReviewReportESignaturePayload,
   AuditReviewReportListItem,
+  AuditReviewReportStatus,
   AuditReviewScope,
   AuditReviewSchedule,
   AuditReviewScheduleFrequency,
@@ -64,7 +69,9 @@ import {
   updateAuditReviewSchedule,
 } from "../../services/audit-review.service";
 import { AssetRecord, getAuditReviewAssets } from "../../services/asset.service";
+import { useCurrentActor } from "../auth/useCurrentActor";
 import { useAuth } from "../auth/useAuth";
+import { ConfirmStrip, EmptyState, FilterBar, SearchableCombobox, StatusBadge, WorkflowStepper, type WorkflowStep } from "../components/foundation";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody } from "../components/ui/card";
@@ -112,6 +119,7 @@ import {
   getAuditReviewESignatureFieldErrors,
   type AuditReviewESignatureFieldErrors,
 } from "../components/assets/AuditReviewESignatureFields";
+import { AuditReviewNotificationsPanel } from "../components/assets/AuditReviewNotificationsPanel";
 
 const FULL_GXP_TYPES = [
   "login_audit_trail",
@@ -309,8 +317,10 @@ const TECHNICAL_ACTION_LABELS: Record<string, string> = {
   getdocumentversion: "Document Version Retrieved",
 };
 
-type TopTab = "new-review" | "progress-review" | "history" | "schedule";
+type TopTab = "dashboard" | "manual" | "schedules" | "jobs" | "approvals" | "notifications" | "history";
 type ResultTab = "summary" | "preview" | "findings" | "evidence";
+type WorkspaceSection = "scope" | "extraction" | "analysis" | "report" | "approval" | "archive";
+type PendingScheduleAction = "disable" | "run-now";
 type ScheduleEndCondition = "NO_END_DATE" | "END_ON_DATE" | "END_AFTER_RUNS";
 type AuditRetrievalMode = "AUTO" | "SINCE_LAST_SUCCESSFUL" | "CUSTOM";
 type ScheduleRunTiming = "FIRST_DAY_AFTER_PERIOD_END" | "CUSTOM_RUN_DAY";
@@ -329,6 +339,25 @@ type PipelineStepKey =
   | "extracted"
   | "analyzed";
 type PipelineStepStatus = "pending" | "active" | "done" | "warning" | "failed";
+
+const TOP_TAB_LABELS: Record<TopTab, string> = {
+  dashboard: "Dashboard",
+  manual: "Manual Reviews",
+  schedules: "Review Schedules",
+  jobs: "Jobs / Runs",
+  approvals: "Reports Awaiting Approval",
+  notifications: "Notifications",
+  history: "History",
+};
+
+const WORKSPACE_SECTION_LABELS: Record<WorkspaceSection, string> = {
+  scope: "Scope & Job Summary",
+  extraction: "Extraction Results",
+  analysis: "Analysis Findings",
+  report: "Report Preview",
+  approval: "Submit / QA Approval",
+  archive: "Archived Report",
+};
 
 interface ReviewRuntime {
   job: AuditReviewJobDetail;
@@ -5353,6 +5382,8 @@ interface PeriodicReviewPageProps {
 
 export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {}) {
   const { hasPermission, hasAllPermissions } = useAuth();
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const canViewAuditReview = hasPermission("AUDIT_REVIEW_VIEW");
   const canGenerateReport = hasPermission("AUDIT_REPORT_GENERATE");
   const canRunReviewPipeline = hasAllPermissions([
@@ -5397,7 +5428,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
   const [historyReportAction, setHistoryReportAction] = useState<ReportWorkflowAction | null>(null);
   const [historyGeneratingDraftReport, setHistoryGeneratingDraftReport] = useState(false);
   const [assetContextCollapsed, setAssetContextCollapsed] = useState(false);
-  const [scheduleForm, setScheduleForm] = useState<ScheduleFormState>(() => buildDefaultScheduleForm());
+  const [scheduleForm, setScheduleForm] = useState<ScheduleFormState>(() => buildDefaultScheduleForm(null, actorName));
   const [scheduleFormDirty, setScheduleFormDirty] = useState(false);
   const [scheduleConfigEditing, setScheduleConfigEditing] = useState(false);
   const [customAuditRangeLocked, setCustomAuditRangeLocked] = useState(false);
@@ -5450,7 +5481,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
     setHistoryGeneratingDraftReport(false);
     setAssetContextCollapsed(false);
     setRunDialogOpen(false);
-    setScheduleForm(buildDefaultScheduleForm());
+    setScheduleForm(buildDefaultScheduleForm(null, actorName));
     setScheduleFormDirty(false);
     setScheduleConfigEditing(false);
     setCustomAuditRangeLocked(false);
@@ -5460,7 +5491,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
     setLastScheduleResult(null);
     setResultTab("summary");
     setPipeline(initialPipeline());
-  }, []);
+  }, [actorName]);
 
   const loadAssetContext = useCallback(async (
     assetId: string,
@@ -5529,16 +5560,16 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
   }, [loadAssetContext, selectedAssetId]);
 
   useEffect(() => {
-    setScheduleForm(buildDefaultScheduleForm(currentSchedule, selectedAsset?.asset_owner, selectedAsset));
+    setScheduleForm(buildDefaultScheduleForm(currentSchedule, actorName, selectedAsset));
     setScheduleFormDirty(false);
     setLastScheduleResult(null);
     setScheduleConfigEditing(!currentSchedule);
     setCustomAuditRangeLocked(false);
-  }, [currentSchedule?.schedule_id, selectedAsset, selectedAssetId]);
+  }, [actorName, currentSchedule?.schedule_id, selectedAsset, selectedAssetId]);
 
   useEffect(() => {
     if (!currentSchedule || scheduleFormDirty || savingSchedule || runningSchedule) return;
-    setScheduleForm(buildDefaultScheduleForm(currentSchedule, selectedAsset?.asset_owner, selectedAsset));
+    setScheduleForm(buildDefaultScheduleForm(currentSchedule, actorName, selectedAsset));
     setCustomAuditRangeLocked(false);
   }, [
     currentSchedule?.modified_dt,
@@ -5547,6 +5578,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
     scheduleFormDirty,
     savingSchedule,
     runningSchedule,
+    actorName,
     selectedAsset,
   ]);
 
@@ -5893,7 +5925,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
       : saved;
 
     setSchedules((previous) => [savedWithRequestedRange, ...previous.filter((item) => item.schedule_id !== savedWithRequestedRange.schedule_id)]);
-    setScheduleForm(buildDefaultScheduleForm(savedWithRequestedRange, selectedAsset?.asset_owner, selectedAsset));
+    setScheduleForm(buildDefaultScheduleForm(savedWithRequestedRange, actorName, selectedAsset));
     setScheduleFormDirty(false);
     setScheduleConfigEditing(false);
     setCustomAuditRangeLocked(false);
@@ -5922,7 +5954,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
         enabled: false,
       });
       setSchedules((previous) => [updated, ...previous.filter((item) => item.schedule_id !== updated.schedule_id)]);
-      setScheduleForm(buildDefaultScheduleForm(updated, selectedAsset?.asset_owner, selectedAsset));
+      setScheduleForm(buildDefaultScheduleForm(updated, actorName, selectedAsset));
       setScheduleFormDirty(false);
       setScheduleConfigEditing(false);
       setCustomAuditRangeLocked(false);
@@ -5951,7 +5983,7 @@ export function PeriodicReviewPage({ onNavigate }: PeriodicReviewPageProps = {})
         : result.schedule;
       setLastScheduleResult(result);
       setSchedules((previous) => [resultSchedule, ...previous.filter((item) => item.schedule_id !== resultSchedule.schedule_id)]);
-      setScheduleForm(buildDefaultScheduleForm(resultSchedule, selectedAsset?.asset_owner, selectedAsset));
+      setScheduleForm(buildDefaultScheduleForm(resultSchedule, actorName, selectedAsset));
       setScheduleFormDirty(false);
       setScheduleConfigEditing(false);
       setCustomAuditRangeLocked(false);

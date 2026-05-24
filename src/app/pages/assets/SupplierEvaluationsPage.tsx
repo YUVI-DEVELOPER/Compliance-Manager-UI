@@ -1,29 +1,43 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Plus } from "lucide-react";
 import { toast, Toaster } from "sonner";
 
 import { AssetRecord, getAssets } from "../../../services/asset.service";
-import { getReleasesByAssetId, ReleaseRecord } from "../../../services/release.service";
 import { getSuppliers, SupplierRecord } from "../../../services/supplier.service";
 import {
+  getSupplierEvaluationRequirements,
   getSupplierEvaluations,
   SupplierEvaluationRecord,
 } from "../../../services/supplier-evaluation.service";
-import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../../components/layout/CommonPageHeader";
-import { buildPageHeaderStats, getPageHeaderConfig } from "../../components/layout/pageHeaderConfig";
-import { Badge } from "../../components/ui/badge";
-import { Button } from "../../components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table";
-import { SupplierEvaluationEditorModal } from "../../components/assets/SupplierEvaluationEditorModal";
-import { SupplierEvaluationWorkspaceModal } from "../../components/assets/SupplierEvaluationWorkspaceModal";
+import { PermissionGuard } from "../../auth/PermissionGuard";
+import { useAuth } from "../../auth/useAuth";
+import { SupplierEvaluationSetupPanel } from "../../components/assets/SupplierEvaluationSetupPanel";
+import { SupplierEvaluationWorkspace } from "../../components/assets/SupplierEvaluationWorkspace";
 import {
-  canEditEvaluation,
   formatEvaluationDate,
   formatSupplierEvaluationStatus,
   getSupplierEvaluationStatusBadgeClass,
   mapSupplierEvaluationAxiosError,
 } from "../../components/assets/supplierEvaluationForm.shared";
 import { loadOmsSourceSystemOptions } from "../../components/assets/documentLinkForm.shared";
+import { EmptyState, FilterBar, SearchableCombobox, StatusBadge } from "../../components/foundation";
+import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../../components/layout/CommonPageHeader";
+import { buildPageHeaderStats, getPageHeaderConfig } from "../../components/layout/pageHeaderConfig";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import { SearchInput } from "../../components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table";
 import { LookupOption } from "../../services/lookupValue.service";
+
+type StatusFilter = "ALL" | "DRAFT" | "OPEN_FOR_RESPONSE" | "LOCKED" | "CLOSED";
+
+const STATUS_FILTERS: Array<{ value: StatusFilter; label: string }> = [
+  { value: "ALL", label: "All" },
+  { value: "DRAFT", label: "Draft" },
+  { value: "OPEN_FOR_RESPONSE", label: "Open for Response" },
+  { value: "LOCKED", label: "Locked" },
+  { value: "CLOSED", label: "Closed" },
+];
 
 const normalize = (value?: string | null): string => (value ?? "").trim();
 
@@ -32,13 +46,25 @@ const getInitialAssetFilter = (): string => {
   return new URLSearchParams(window.location.search).get("asset_id") || "ALL";
 };
 
-const updateAssetQueryParam = (assetId: string) => {
+const getInitialWorkspaceEvaluationId = (): string | null => {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("evaluation_id");
+};
+
+const updateSupplierEvaluationQuery = (assetId: string, evaluationId?: string | null) => {
+  if (typeof window === "undefined") return;
+
   const url = new URL(window.location.href);
   url.pathname = "/supplier-evaluations";
   if (assetId === "ALL") {
     url.searchParams.delete("asset_id");
   } else {
     url.searchParams.set("asset_id", assetId);
+  }
+  if (evaluationId) {
+    url.searchParams.set("evaluation_id", evaluationId);
+  } else {
+    url.searchParams.delete("evaluation_id");
   }
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
 };
@@ -53,38 +79,52 @@ const getEvaluationSortValue = (evaluation: SupplierEvaluationRecord): number =>
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+function EvaluationStatusBadge({ status }: { status?: string | null }) {
+  const kind = status === "CLOSED" ? "inactive" : status === "LOCKED" || status === "DRAFT" ? "pending" : "active";
+  return (
+    <span className="inline-flex items-center gap-2">
+      <StatusBadge status={kind} title={formatSupplierEvaluationStatus(status)} />
+      <Badge variant="outline" className={getSupplierEvaluationStatusBadgeClass(status)}>
+        {formatSupplierEvaluationStatus(status)}
+      </Badge>
+    </span>
+  );
+}
+
 export function SupplierEvaluationsPage() {
   const header = getPageHeaderConfig("supplier-evaluations");
+  const { hasPermission } = useAuth();
+  const canCreateEvaluation = hasPermission("ASSET_CREATE");
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [suppliers, setSuppliers] = useState<SupplierRecord[]>([]);
   const [sourceSystemOptions, setSourceSystemOptions] = useState<LookupOption[]>([]);
   const [evaluations, setEvaluations] = useState<SupplierEvaluationRecord[]>([]);
+  const [requirementCounts, setRequirementCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [assetFilter, setAssetFilter] = useState(getInitialAssetFilter);
-  const [statusFilter, setStatusFilter] = useState("ALL");
-  const [editorOpen, setEditorOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [setupPanelMode, setSetupPanelMode] = useState<"create" | "edit" | null>(null);
   const [editingEvaluation, setEditingEvaluation] = useState<SupplierEvaluationRecord | null>(null);
-  const [editorAsset, setEditorAsset] = useState<AssetRecord | null>(null);
-  const [editorReleases, setEditorReleases] = useState<ReleaseRecord[]>([]);
-  const [workspaceEvaluationId, setWorkspaceEvaluationId] = useState<string | null>(null);
+  const [workspaceEvaluationId, setWorkspaceEvaluationId] = useState<string | null>(getInitialWorkspaceEvaluationId);
 
   const selectedAsset = useMemo(() => findAssetByToken(assets, assetFilter), [assetFilter, assets]);
   const assetByUuid = useMemo(() => new Map(assets.map((asset) => [asset.asset_uuid, asset])), [assets]);
 
-  const loadEditorReleases = useCallback(async (asset: AssetRecord | null) => {
-    if (!asset?.asset_uuid) {
-      setEditorReleases([]);
-      return;
-    }
-
-    try {
-      setEditorReleases(await getReleasesByAssetId(asset.asset_uuid));
-    } catch (error) {
-      console.error("Failed to load releases for supplier evaluation editor:", error);
-      toast.error("Failed to load release options");
-      setEditorReleases([]);
-    }
+  const loadRequirementCounts = useCallback(async (rows: SupplierEvaluationRecord[]) => {
+    const results = await Promise.allSettled(
+      rows.map(async (evaluation) => ({
+        id: evaluation.evaluation_id,
+        count: (await getSupplierEvaluationRequirements(evaluation.evaluation_id)).length,
+      })),
+    );
+    const nextCounts: Record<string, number> = {};
+    results.forEach((result) => {
+      if (result.status === "fulfilled") {
+        nextCounts[result.value.id] = result.value.count;
+      }
+    });
+    setRequirementCounts(nextCounts);
   }, []);
 
   const loadPage = useCallback(async () => {
@@ -97,22 +137,23 @@ export function SupplierEvaluationsPage() {
       ]);
       const scopedAsset = findAssetByToken(assetData, assetFilter);
       const data = await getSupplierEvaluations(scopedAsset ? { asset_uuid: scopedAsset.asset_uuid } : {});
+      const sortedData = [...data].sort((left, right) => getEvaluationSortValue(right) - getEvaluationSortValue(left));
 
       setAssets(assetData);
       setSuppliers(supplierData);
       setSourceSystemOptions(sourceOptions);
-      setEvaluations([...data].sort((left, right) => getEvaluationSortValue(right) - getEvaluationSortValue(left)));
+      setEvaluations(sortedData);
       if (scopedAsset && scopedAsset.asset_uuid !== assetFilter) {
         setAssetFilter(scopedAsset.asset_uuid);
-        updateAssetQueryParam(scopedAsset.asset_uuid);
+        updateSupplierEvaluationQuery(scopedAsset.asset_uuid, workspaceEvaluationId);
       }
+      void loadRequirementCounts(sortedData);
     } catch (error) {
-      console.error("Failed to load supplier evaluations:", error);
       toast.error(mapSupplierEvaluationAxiosError(error));
     } finally {
       setLoading(false);
     }
-  }, [assetFilter]);
+  }, [assetFilter, loadRequirementCounts, workspaceEvaluationId]);
 
   useEffect(() => {
     void loadPage();
@@ -134,6 +175,7 @@ export function SupplierEvaluationsPage() {
         evaluation.asset_name,
         asset?.asset_id,
         asset?.asset_name,
+        asset?.supplier_name,
       ]
         .map((value) => normalize(value).toLowerCase())
         .some((value) => value.includes(query));
@@ -147,57 +189,112 @@ export function SupplierEvaluationsPage() {
     locked: filteredEvaluations.filter((evaluation) => evaluation.status === "LOCKED" || evaluation.status === "CLOSED").length,
   });
 
+  const assetOptions = useMemo(
+    () =>
+      assets.map((asset) => ({
+        value: asset.asset_uuid,
+        label: `${asset.asset_id} | ${asset.asset_name || "Unnamed asset"}`,
+        description: [asset.asset_class, asset.asset_category, asset.supplier_name].filter(Boolean).join(" | "),
+      })),
+    [assets],
+  );
+
+  const activeFilters = useMemo(() => {
+    const filters = [];
+    if (search.trim()) {
+      filters.push({
+        key: "search",
+        label: `Search: ${search.trim()}`,
+        onRemove: () => setSearch(""),
+      });
+    }
+    if (selectedAsset) {
+      filters.push({
+        key: "asset",
+        label: `Asset: ${selectedAsset.asset_id}`,
+        onRemove: () => handleAssetFilterChange("ALL"),
+      });
+    }
+    if (statusFilter !== "ALL") {
+      filters.push({
+        key: "status",
+        label: `Status: ${formatSupplierEvaluationStatus(statusFilter)}`,
+        onRemove: () => setStatusFilter("ALL"),
+      });
+    }
+    return filters;
+  }, [search, selectedAsset, statusFilter]);
+
   const handleAssetFilterChange = (value: string) => {
     setAssetFilter(value);
-    updateAssetQueryParam(value);
+    updateSupplierEvaluationQuery(value, workspaceEvaluationId);
   };
 
-  const openCreate = async () => {
-    if (!selectedAsset) return;
+  const clearFilters = () => {
+    setSearch("");
+    setStatusFilter("ALL");
+    handleAssetFilterChange("ALL");
+  };
+
+  const openCreate = () => {
     setEditingEvaluation(null);
-    setEditorAsset(selectedAsset);
-    await loadEditorReleases(selectedAsset);
-    setEditorOpen(true);
+    setSetupPanelMode("create");
   };
 
-  const openEdit = async (evaluation: SupplierEvaluationRecord) => {
-    const asset = assetByUuid.get(evaluation.asset_uuid) ?? null;
+  const openEdit = (evaluation: SupplierEvaluationRecord) => {
     setEditingEvaluation(evaluation);
-    setEditorAsset(asset);
-    await loadEditorReleases(asset);
-    setEditorOpen(true);
+    setSetupPanelMode("edit");
   };
 
-  const handleSaved = async () => {
-    await loadPage();
-    setEditorOpen(false);
-    setEditingEvaluation(null);
+  const openWorkspace = (evaluationId: string) => {
+    setWorkspaceEvaluationId(evaluationId);
+    updateSupplierEvaluationQuery(assetFilter, evaluationId);
   };
+
+  const closeWorkspace = () => {
+    setWorkspaceEvaluationId(null);
+    updateSupplierEvaluationQuery(assetFilter, null);
+  };
+
+  if (workspaceEvaluationId) {
+    return (
+      <div className={PAGE_LAYOUT_SHELL_CLASS}>
+        <div className={PAGE_CONTENT_CLASS}>
+          <SupplierEvaluationWorkspace
+            evaluationId={workspaceEvaluationId}
+            suppliers={suppliers}
+            sourceSystemOptions={sourceSystemOptions}
+            onBack={closeWorkspace}
+            onChanged={loadPage}
+          />
+        </div>
+        <Toaster position="top-right" richColors />
+      </div>
+    );
+  }
 
   return (
     <div className={PAGE_LAYOUT_SHELL_CLASS}>
       <CommonPageHeader
         breadcrumbs={header.breadcrumbs}
-        sectionLabel={header.sectionLabel}
-        title={header.title}
-        subtitle={header.subtitle}
-        search={{
-          value: search,
-          placeholder: header.searchPlaceholder || "Search supplier evaluations...",
-          onChange: setSearch,
-          onClear: () => setSearch(""),
-          disabled: loading,
-        }}
+        sectionLabel="Operations"
+        title="Supplier Evaluations"
+        subtitle="Manage supplier requirement responses, evidence, scoring, and closure"
         stats={headerStats}
-        primaryAction={{
-          ...(header.primaryAction ?? { key: "new-evaluation", label: "New Evaluation", icon: "plus" }),
-          onClick: () => void openCreate(),
-          disabled: loading || !selectedAsset,
-        }}
+        rightSlot={
+          <PermissionGuard permission="ASSET_CREATE">
+            <Button type="button" size="sm" onClick={openCreate} disabled={loading || !canCreateEvaluation}>
+              <Plus className="h-4 w-4" />
+              New Evaluation
+            </Button>
+          </PermissionGuard>
+        }
         secondaryActions={[
           {
-            ...(header.secondaryActions?.[0] ?? { key: "refresh", label: "Refresh", icon: "refresh", variant: "secondary" }),
+            key: "refresh",
             label: loading ? "Loading" : "Refresh",
+            icon: "refresh",
+            variant: "secondary",
             onClick: () => void loadPage(),
             disabled: loading,
           },
@@ -205,157 +302,175 @@ export function SupplierEvaluationsPage() {
       />
 
       <div className={PAGE_CONTENT_CLASS}>
-        <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/70 px-4 py-3 lg:flex-row lg:items-end lg:justify-between">
+        <FilterBar activeFilters={activeFilters} onClearAll={clearFilters}>
+          <div className="min-w-64 flex-1">
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Search</label>
+            <SearchInput
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onClear={() => setSearch("")}
+              placeholder="Search by evaluation title, asset, release, supplier..."
+              disabled={loading}
+            />
+          </div>
+          <SearchableCombobox
+            label="Asset"
+            options={assetOptions}
+            value={selectedAsset?.asset_uuid ?? null}
+            onChange={(value) => handleAssetFilterChange(value ?? "ALL")}
+            placeholder="All assets"
+            emptyText="No assets found"
+            disabled={loading}
+          />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-slate-700">Status</span>
+            <div className="flex flex-wrap gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
+              {STATUS_FILTERS.map((status) => (
+                <button
+                  key={status.value}
+                  type="button"
+                  className={`rounded px-3 py-1.5 text-sm font-medium transition ${
+                    statusFilter === status.value
+                      ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
+                      : "text-slate-600 hover:bg-white"
+                  }`}
+                  onClick={() => setStatusFilter(status.value)}
+                  disabled={loading}
+                >
+                  {status.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </FilterBar>
+
+        {selectedAsset ? (
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800">
+            Viewing supplier evaluations for {selectedAsset.asset_name || selectedAsset.asset_id}
+          </div>
+        ) : null}
+
+        <section className="rounded-md border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <p className="text-sm font-semibold text-slate-900">Supplier Evaluation Workflows</p>
-              <p className="mt-1 text-xs text-slate-500">Create, edit, score, lock, and close evaluations by Asset ID.</p>
+              <h2 className="text-sm font-semibold text-slate-900">Supplier Evaluation Register</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Track supplier requirement response, evidence, AI scoring, lock, and closure state outside Asset Master.
+              </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <label className="space-y-1 text-xs font-medium text-slate-600">
-                <span>Asset</span>
-                <select
-                  value={assetFilter}
-                  onChange={(event) => handleAssetFilterChange(event.target.value)}
-                  className="h-9 min-w-52 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
-                  disabled={loading}
-                >
-                  <option value="ALL">All assets</option>
-                  {assets.map((asset) => (
-                    <option key={asset.asset_uuid} value={asset.asset_uuid}>
-                      {asset.asset_id} | {asset.asset_name || "Unnamed asset"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-1 text-xs font-medium text-slate-600">
-                <span>Status</span>
-                <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value)}
-                  className="h-9 min-w-44 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
-                  disabled={loading}
-                >
-                  <option value="ALL">All statuses</option>
-                  <option value="DRAFT">Draft</option>
-                  <option value="OPEN_FOR_RESPONSE">Open for Response</option>
-                  <option value="LOCKED">Locked</option>
-                  <option value="CLOSED">Closed</option>
-                </select>
-              </label>
-            </div>
+            <PermissionGuard permission="ASSET_CREATE">
+              <Button type="button" variant="outline" size="sm" onClick={openCreate} disabled={loading}>
+                <Plus className="h-4 w-4" />
+                New Evaluation
+              </Button>
+            </PermissionGuard>
           </div>
 
-          {!selectedAsset ? (
-            <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-              Select an asset to create a new evaluation. Existing evaluations remain visible in the table.
-            </div>
-          ) : null}
-
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-white">
-                  <TableHead className="min-w-[16rem] font-semibold">Evaluation</TableHead>
-                  <TableHead className="min-w-[15rem] font-semibold">Asset</TableHead>
-                  <TableHead className="font-semibold">Status</TableHead>
-                  <TableHead className="min-w-[18rem] font-semibold">URS</TableHead>
-                  <TableHead className="font-semibold">Suppliers</TableHead>
-                  <TableHead className="font-semibold">Submitted</TableHead>
-                  <TableHead className="font-semibold">Updated</TableHead>
-                  <TableHead className="min-w-[12rem] font-semibold text-right">Actions</TableHead>
+          <Table className="min-w-[76rem]" containerClassName="max-h-none overflow-x-auto overflow-y-visible">
+            <TableHeader>
+              <TableRow className="bg-slate-50">
+                <TableHead className="min-w-[17rem] font-semibold">Evaluation Title</TableHead>
+                <TableHead className="min-w-[15rem] font-semibold">Asset</TableHead>
+                <TableHead className="min-w-[10rem] font-semibold">Release</TableHead>
+                <TableHead className="min-w-[14rem] font-semibold">Supplier</TableHead>
+                <TableHead className="font-semibold">Status</TableHead>
+                <TableHead className="font-semibold">Requirements</TableHead>
+                <TableHead className="font-semibold">Completion</TableHead>
+                <TableHead className="font-semibold">Last Updated</TableHead>
+                <TableHead className="min-w-[13rem] font-semibold text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="py-10 text-center text-slate-500">
+                    Loading supplier evaluations...
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center text-slate-500">
-                      Loading supplier evaluations...
-                    </TableCell>
-                  </TableRow>
-                ) : filteredEvaluations.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center text-slate-500">
-                      No supplier evaluations match the current view.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredEvaluations.map((evaluation) => {
-                    const asset = assetByUuid.get(evaluation.asset_uuid);
-                    return (
-                      <TableRow key={evaluation.evaluation_id} className="hover:bg-slate-50">
-                        <TableCell className="align-top">
-                          <div className="font-medium text-slate-900">{evaluation.evaluation_name || "-"}</div>
-                          <p className="mt-1 text-xs text-slate-500">ID: {evaluation.evaluation_id}</p>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="font-medium text-slate-900">{asset?.asset_name || evaluation.asset_name || "-"}</div>
-                          <p className="mt-1 text-xs text-slate-500">{asset?.asset_id || evaluation.asset_code || evaluation.asset_uuid}</p>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <Badge variant="outline" className={getSupplierEvaluationStatusBadgeClass(evaluation.status)}>
-                            {formatSupplierEvaluationStatus(evaluation.status)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="max-w-[22rem] break-words font-medium leading-5 text-slate-900">
-                            {evaluation.urs_title || "-"}
-                          </div>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {evaluation.urs_release_version ? `Release ${evaluation.urs_release_version}` : "Asset-level URS"}
-                          </p>
-                        </TableCell>
-                        <TableCell className="align-top text-slate-700">{evaluation.response_count}</TableCell>
-                        <TableCell className="align-top text-slate-700">
-                          {evaluation.submitted_response_count} / {evaluation.response_count}
-                        </TableCell>
-                        <TableCell className="align-top text-slate-600">
-                          {formatEvaluationDate(evaluation.modified_dt || evaluation.created_dt)}
-                        </TableCell>
-                        <TableCell className="align-top text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <Button type="button" variant="ghost" size="sm" onClick={() => setWorkspaceEvaluationId(evaluation.evaluation_id)}>
-                              Workspace
-                            </Button>
-                            {canEditEvaluation(evaluation.status) ? (
-                              <Button type="button" variant="outline" size="sm" onClick={() => void openEdit(evaluation)}>
-                                Edit
+              ) : filteredEvaluations.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="p-4">
+                    <EmptyState
+                      title={evaluations.length === 0 ? "No supplier evaluations" : "No supplier evaluation results"}
+                      description={
+                        evaluations.length === 0
+                          ? "Create a supplier evaluation to begin response capture."
+                          : "Adjust search, asset, or status filters."
+                      }
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredEvaluations.map((evaluation) => {
+                  const asset = assetByUuid.get(evaluation.asset_uuid);
+                  const requirementCount = requirementCounts[evaluation.evaluation_id];
+                  return (
+                    <TableRow key={evaluation.evaluation_id} className="hover:bg-slate-50">
+                      <TableCell className="align-top whitespace-normal">
+                        <div className="font-medium text-slate-900">{evaluation.evaluation_name || "-"}</div>
+                        <p className="mt-1 text-xs text-slate-500">ID: {evaluation.evaluation_id}</p>
+                      </TableCell>
+                      <TableCell className="align-top whitespace-normal">
+                        <div className="font-medium text-slate-900">
+                          {asset?.asset_name || evaluation.asset_name || "-"}
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {asset?.asset_id || evaluation.asset_code || evaluation.asset_uuid}
+                        </p>
+                      </TableCell>
+                      <TableCell className="align-top text-slate-700">
+                        {evaluation.urs_release_version ? `Release ${evaluation.urs_release_version}` : "-"}
+                      </TableCell>
+                      <TableCell className="align-top whitespace-normal text-slate-700">
+                        {asset?.supplier_name || "See workspace"}
+                      </TableCell>
+                      <TableCell className="align-top">
+                        <EvaluationStatusBadge status={evaluation.status} />
+                      </TableCell>
+                      <TableCell className="align-top text-slate-700">{requirementCount ?? "-"}</TableCell>
+                      <TableCell className="align-top text-slate-700">
+                        {evaluation.submitted_response_count} / {evaluation.response_count}
+                      </TableCell>
+                      <TableCell className="align-top text-slate-600">
+                        {formatEvaluationDate(evaluation.modified_dt || evaluation.created_dt)}
+                      </TableCell>
+                      <TableCell className="align-top text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button type="button" variant="ghost" size="sm" onClick={() => openWorkspace(evaluation.evaluation_id)}>
+                            Open Workspace
+                          </Button>
+                          {evaluation.status === "DRAFT" || evaluation.status === "OPEN_FOR_RESPONSE" ? (
+                            <PermissionGuard permission="ASSET_UPDATE">
+                              <Button type="button" variant="outline" size="sm" onClick={() => openEdit(evaluation)}>
+                                Edit Setup
                               </Button>
-                            ) : null}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                            </PermissionGuard>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         </section>
       </div>
 
-      <SupplierEvaluationEditorModal
-        open={editorOpen}
-        assetId={editorAsset?.asset_uuid ?? selectedAsset?.asset_uuid ?? null}
-        assetName={editorAsset?.asset_name ?? selectedAsset?.asset_name ?? null}
-        assetCode={editorAsset?.asset_id ?? selectedAsset?.asset_id ?? null}
-        suppliers={suppliers}
-        releases={editorReleases}
+      <SupplierEvaluationSetupPanel
+        open={Boolean(setupPanelMode)}
+        mode={setupPanelMode ?? "create"}
         evaluation={editingEvaluation}
+        initialAssetId={selectedAsset?.asset_uuid ?? null}
+        assets={assets}
+        suppliers={suppliers}
         onClose={() => {
-          setEditorOpen(false);
+          setSetupPanelMode(null);
           setEditingEvaluation(null);
         }}
-        onSaved={handleSaved}
-      />
-
-      <SupplierEvaluationWorkspaceModal
-        open={Boolean(workspaceEvaluationId)}
-        evaluationId={workspaceEvaluationId}
-        suppliers={suppliers}
-        sourceSystemOptions={sourceSystemOptions}
-        onClose={() => setWorkspaceEvaluationId(null)}
-        onChanged={loadPage}
+        onSaved={async () => {
+          await loadPage();
+        }}
       />
 
       <Toaster position="top-right" richColors />

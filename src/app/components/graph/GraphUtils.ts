@@ -8,6 +8,8 @@ export interface GraphNodeData {
   type: NodeType;
   name: string;
   metadata: Record<string, unknown>;
+  searchMatched?: boolean;
+  dimmed?: boolean;
   // For collapsed nodes
   isCollapsed?: boolean;
   childrenCount?: number;

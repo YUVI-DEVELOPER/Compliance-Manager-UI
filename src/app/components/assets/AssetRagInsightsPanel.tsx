@@ -19,6 +19,7 @@ import {
 } from "../../../services/document-vectorization.service";
 import { reprocessDocumentVectorization } from "../../../services/document-link.service";
 import { LookupOption } from "../../services/lookupValue.service";
+import { EmptyState } from "../foundation";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -394,9 +395,11 @@ export function DocumentChunkViewer({ document }: { document: AssetVectorization
             Loading chunk list...
           </div>
         ) : !chunkData || chunkData.chunks.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
-            No chunks are available for this document view.
-          </div>
+          <EmptyState
+            title="No chunks available"
+            description="Chunk extraction output will appear here when this document has retrievable RAG chunks."
+            className="bg-white"
+          />
         ) : (
           chunkData.chunks.map((chunk: DocumentVectorizationChunk) => {
             const expanded = expandedChunks.has(chunk.chunk_id);
@@ -494,9 +497,17 @@ export function DocumentJsonReportViewer({ document }: { document: AssetVectoriz
           Copy
         </Button>
       </div>
-      <pre className="max-h-[58vh] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">
-        {loading ? "Loading..." : report ? jsonText : "{}"}
-      </pre>
+      {!loading && !report ? (
+        <EmptyState
+          title="No JSON report"
+          description="Structured extraction metadata will appear here when the current vectorization report is available."
+          className="bg-white"
+        />
+      ) : (
+        <pre className="max-h-[58vh] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+          {loading ? "Loading..." : jsonText}
+        </pre>
+      )}
     </div>
   );
 }
@@ -542,9 +553,11 @@ export function DocumentRagProcessTimeline({ document }: { document: AssetVector
 
   if (!process) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
-        No RAG process detail is available.
-      </div>
+      <EmptyState
+        title="No process logs"
+        description="Processing stages and logs will appear here when the RAG process detail is available."
+        className="bg-white"
+      />
     );
   }
 
@@ -566,35 +579,43 @@ export function DocumentRagProcessTimeline({ document }: { document: AssetVector
         ) : null}
       </div>
 
-      <div className="space-y-3">
-        {process.stages.map((stage) => (
-          <div key={stage.key} className="rounded-lg border border-slate-200 bg-white p-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h4 className="text-sm font-semibold text-slate-900">{stage.label}</h4>
-                  <Badge variant="outline" className={getStageBadgeClass(stage.status)}>
-                    {formatStageStatus(stage.status)}
-                  </Badge>
+      {process.stages.length === 0 ? (
+        <EmptyState
+          title="No process stages"
+          description="Stage-level processing logs will appear here when they are reported by the RAG workflow."
+          className="bg-white"
+        />
+      ) : (
+        <div className="space-y-3">
+          {process.stages.map((stage) => (
+            <div key={stage.key} className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="text-sm font-semibold text-slate-900">{stage.label}</h4>
+                    <Badge variant="outline" className={getStageBadgeClass(stage.status)}>
+                      {formatStageStatus(stage.status)}
+                    </Badge>
+                  </div>
                 </div>
+                <p className="text-xs text-slate-500">{formatProcessTimestamp(stage)}</p>
               </div>
-              <p className="text-xs text-slate-500">{formatProcessTimestamp(stage)}</p>
+              {stage.details && Object.keys(stage.details).length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Object.entries(stage.details)
+                    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+                    .slice(0, 3)
+                    .map(([key, value]) => (
+                      <span key={key} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                        {key}: {String(value)}
+                      </span>
+                    ))}
+                </div>
+              ) : null}
             </div>
-            {stage.details && Object.keys(stage.details).length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {Object.entries(stage.details)
-                  .filter(([, value]) => value !== undefined && value !== null && value !== "")
-                  .slice(0, 3)
-                  .map(([key, value]) => (
-                    <span key={key} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                      {key}: {String(value)}
-                    </span>
-                  ))}
-              </div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
     </div>
   );

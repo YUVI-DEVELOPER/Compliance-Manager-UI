@@ -1,33 +1,46 @@
-import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
-  Node,
-  Edge,
-  Controls,
-  MiniMap,
   Background,
-  useNodesState,
-  useEdgesState,
   BackgroundVariant,
+  Edge,
+  MiniMap,
+  Node,
   NodeTypes,
   ReactFlowInstance,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
+  useEdgesState,
+  useNodesState,
+} from "reactflow";
+import "reactflow/dist/style.css";
+import {
+  AlertTriangle,
+  Building2,
+  Database,
+  ExternalLink,
+  Loader2,
+  Maximize2,
+  Network,
+  RefreshCcw,
+  RotateCcw,
+  Truck,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
+import { toast } from "sonner";
 
-import { GlassNode, Tooltip } from '../../components/graph/CustomNodes';
-import { GraphControls } from '../../components/graph/GraphControls';
-import { getLayoutedElements, GraphNodeData } from '../../components/graph/GraphUtils';
-import { getOrgTree, OrgNode } from '../../../services/org.service';
-import { getAssets, AssetRecord } from '../../../services/asset.service';
-import { getSuppliers, SupplierRecord } from '../../../services/supplier.service';
-import { getOrgById } from '../../../services/org.service';
-import { getAssetById } from '../../../services/asset.service';
-import { getSupplierById } from '../../../services/supplier.service';
-import { Drawer } from '../../components/ui/Modal';
-import { toast } from 'sonner';
-import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from '../../components/layout/CommonPageHeader';
-import { buildPageHeaderStats, getPageHeaderConfig } from '../../components/layout/pageHeaderConfig';
+import { PermissionGuard } from "../../auth/PermissionGuard";
+import { EmptyState, RightPanel, StatusBadge } from "../../components/foundation";
+import { GlassNode } from "../../components/graph/CustomNodes";
+import { GraphControls } from "../../components/graph/GraphControls";
+import { getLayoutedElements, GraphNodeData, NodeType } from "../../components/graph/GraphUtils";
+import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../../components/layout/CommonPageHeader";
+import { buildPageHeaderStats, getPageHeaderConfig } from "../../components/layout/pageHeaderConfig";
+import { Button } from "../../components/ui/button";
+import { cn } from "../../components/ui/utils";
+import { navigateToAsset, navigateToOrg, navigateToSupplier } from "../../utils/moduleNavigation";
+import { AssetRecord, getAssetById, getAssets } from "../../../services/asset.service";
+import { getOrgById, getOrgTree, OrgNode } from "../../../services/org.service";
+import { getSupplierById, getSuppliers, SupplierRecord } from "../../../services/supplier.service";
 
-// Custom node types
 const nodeTypes: NodeTypes = {
   ORG: GlassNode,
   ASSET: GlassNode,
@@ -36,17 +49,38 @@ const nodeTypes: NodeTypes = {
   SUPPLIERS_COLLAPSED: GlassNode,
 };
 
-interface GraphFilters {
-  ORG: boolean;
-  ASSET: boolean;
-  SUPPLIER: boolean;
-  [key: string]: boolean;
-}
+type GraphFilters = Record<string, boolean>;
+type NavigableNodeType = "ORG" | "ASSET" | "SUPPLIER";
 
 interface NodeCounts {
   ORG: number;
   ASSET: number;
   SUPPLIER: number;
+  [key: string]: number;
+}
+
+interface RelationshipGroup {
+  label: string;
+  items: string[];
+  emptyLabel?: string;
+}
+
+interface DetailField {
+  label: string;
+  value: React.ReactNode;
+}
+
+interface NodeDetail {
+  node: GraphNodeData;
+  type: NodeType;
+  title: string;
+  codeOrId: string;
+  status?: string | null;
+  fields: DetailField[];
+  relationships: RelationshipGroup[];
+  metadata: DetailField[];
+  navigationId?: string | null;
+  viewPermission?: string;
 }
 
 const initialFilters: GraphFilters = {
@@ -55,48 +89,339 @@ const initialFilters: GraphFilters = {
   SUPPLIER: true,
 };
 
+const typeStyles: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
+  ORG: {
+    label: "Org",
+    icon: <Building2 className="h-4 w-4" />,
+    className: "border-blue-200 bg-blue-50 text-blue-700",
+  },
+  ASSET: {
+    label: "Asset",
+    icon: <Database className="h-4 w-4" />,
+    className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  },
+  SUPPLIER: {
+    label: "Supplier",
+    icon: <Truck className="h-4 w-4" />,
+    className: "border-violet-200 bg-violet-50 text-violet-700",
+  },
+};
+
+const formatValue = (value: unknown): string => {
+  if (value === null || value === undefined) return "-";
+  const text = String(value).trim();
+  return text || "-";
+};
+
+const textOrNull = (value: unknown): string | null => {
+  const text = formatValue(value);
+  return text === "-" ? null : text;
+};
+
+const compactList = (items: Array<string | null | undefined>, limit = 5): string[] => {
+  const cleaned = items.map((item) => item?.trim()).filter((item): item is string => Boolean(item));
+  if (cleaned.length <= limit) return cleaned;
+  return [...cleaned.slice(0, limit), `+${cleaned.length - limit} more`];
+};
+
+const flattenOrgs = (nodes: OrgNode[]): OrgNode[] =>
+  nodes.reduce<OrgNode[]>((accumulator, node) => {
+    accumulator.push(node);
+    if (node.children?.length) {
+      accumulator.push(...flattenOrgs(node.children));
+    }
+    return accumulator;
+  }, []);
+
+const buildOrgMap = (nodes: OrgNode[]): Map<string, OrgNode> => new Map(flattenOrgs(nodes).map((org) => [org.id, org]));
+
+const statusKind = (status?: string | null): "active" | "inactive" | "pending" | "error" => {
+  const normalized = (status ?? "").trim().toUpperCase();
+  if (!normalized) return "inactive";
+  if (normalized.includes("FAILED") || normalized.includes("ERROR") || normalized.includes("REJECT")) return "error";
+  if (normalized.includes("PENDING") || normalized.includes("DRAFT") || normalized.includes("UNDER")) return "pending";
+  if (normalized.includes("INACTIVE") || normalized.includes("CLOSED") || normalized.includes("DISABLED") || normalized.includes("RETIRED")) {
+    return "inactive";
+  }
+  return "active";
+};
+
+const statusLabel = (status?: string | null): string => {
+  const text = (status ?? "").trim();
+  return text ? text.replace(/_/g, " ") : "Unknown";
+};
+
+const field = (label: string, value: React.ReactNode): DetailField => ({ label, value });
+
+const textField = (label: string, value: unknown): DetailField => field(label, formatValue(value));
+
+const metadataValue = (data: GraphNodeData, key: string): string | null => textOrNull(data.metadata[key]);
+
+const searchableText = (node: Node<GraphNodeData>): string =>
+  [
+    node.id,
+    node.data.id,
+    node.data.name,
+    node.data.type,
+    ...Object.entries(node.data.metadata).flatMap(([key, value]) => [key, value]),
+  ]
+    .filter((value) => value !== null && value !== undefined)
+    .join(" ")
+    .toLowerCase();
+
+const isNavigableNodeType = (type: NodeType): type is NavigableNodeType => type === "ORG" || type === "ASSET" || type === "SUPPLIER";
+
+const getViewPermission = (type: NodeType): string | undefined => {
+  if (type === "ORG") return "ORGANIZATION_VIEW";
+  if (type === "ASSET") return "ASSET_VIEW";
+  if (type === "SUPPLIER") return "SUPPLIER_VIEW";
+  return undefined;
+};
+
+const resolveAssetNavigationId = (data: GraphNodeData): string | null => {
+  const assetUuid = metadataValue(data, "asset_uuid");
+  if (assetUuid) return assetUuid;
+  // TODO: Backfill asset_uuid for graph asset nodes that only expose display codes.
+  return metadataValue(data, "asset_id") ?? metadataValue(data, "Asset Code") ?? data.id;
+};
+
+const resolveNavigationId = (data: GraphNodeData): string | null => {
+  if (data.type === "ASSET") return resolveAssetNavigationId(data);
+  if (data.type === "SUPPLIER") return metadataValue(data, "supplier_id") ?? data.id;
+  if (data.type === "ORG") return metadataValue(data, "org_node_id") ?? data.id;
+  return null;
+};
+
+const renderStatus = (status?: string | null): React.ReactNode => {
+  if (!status) return "-";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <StatusBadge status={statusKind(status)} title={statusLabel(status)} />
+      <span className="text-xs font-medium text-slate-600">{statusLabel(status)}</span>
+    </span>
+  );
+};
+
+function buildRelationshipSummary(
+  node: GraphNodeData,
+  orgTree: OrgNode[],
+  assets: AssetRecord[],
+  suppliers: SupplierRecord[],
+): RelationshipGroup[] {
+  const orgMap = buildOrgMap(orgTree);
+  const supplierMap = new Map(suppliers.map((supplier) => [supplier.supplier_id, supplier]));
+
+  if (node.type === "ORG") {
+    const org = orgMap.get(node.id);
+    const childNames = compactList(org?.children?.map((child) => child.name) ?? []);
+    const orgAssets = assets.filter((asset) => asset.org_node_id === node.id);
+    const relatedSupplierNames = compactList(
+      [...new Set(orgAssets.map((asset) => asset.supplier_id).filter(Boolean) as string[])]
+        .map((supplierId) => supplierMap.get(supplierId)?.supplier_name ?? supplierId),
+    );
+    return [
+      {
+        label: "Parent",
+        items: compactList([org?.parent_id ? orgMap.get(org.parent_id)?.name ?? org.parent_id : "Top level"]),
+      },
+      { label: "Child orgs", items: childNames, emptyLabel: "No child orgs" },
+      {
+        label: "Connected assets",
+        items: compactList(orgAssets.map((asset) => asset.asset_name || asset.asset_id || asset.asset_uuid)),
+        emptyLabel: "No connected assets",
+      },
+      { label: "Connected suppliers", items: relatedSupplierNames, emptyLabel: "No connected suppliers" },
+    ];
+  }
+
+  if (node.type === "ASSET") {
+    const assetUuid = metadataValue(node, "asset_uuid");
+    const asset = assets.find((item) => item.asset_uuid === assetUuid || item.asset_id === node.id || item.asset_code === node.id);
+    const org = asset?.org_node_id ? orgMap.get(asset.org_node_id) : null;
+    const supplier = asset?.supplier_id ? supplierMap.get(asset.supplier_id) : null;
+    return [
+      { label: "Owning org", items: compactList([org?.name ?? asset?.org_node_name ?? metadataValue(node, "Organization")]), emptyLabel: "No org linked" },
+      { label: "Supplier", items: compactList([supplier?.supplier_name ?? asset?.supplier_name ?? metadataValue(node, "Supplier")]), emptyLabel: "No supplier linked" },
+    ];
+  }
+
+  if (node.type === "SUPPLIER") {
+    const supplierAssets = assets.filter((asset) => asset.supplier_id === node.id);
+    const relatedOrgs = compactList(
+      [...new Set(supplierAssets.map((asset) => asset.org_node_id).filter(Boolean) as string[])]
+        .map((orgId) => orgMap.get(orgId)?.name ?? orgId),
+    );
+    return [
+      {
+        label: "Provided assets",
+        items: compactList(supplierAssets.map((asset) => asset.asset_name || asset.asset_id || asset.asset_uuid)),
+        emptyLabel: "No connected assets",
+      },
+      { label: "Connected orgs", items: relatedOrgs, emptyLabel: "No connected orgs" },
+    ];
+  }
+
+  return [{ label: "Connections", items: [], emptyLabel: "No relationship summary available" }];
+}
+
+function buildDetailFromNode(
+  node: GraphNodeData,
+  orgTree: OrgNode[],
+  assets: AssetRecord[],
+  suppliers: SupplierRecord[],
+  record?: OrgNode | AssetRecord | SupplierRecord | null,
+): NodeDetail {
+  const type = node.type;
+  const recordData = record as Record<string, unknown> | null | undefined;
+  const codeOrId =
+    type === "ORG"
+      ? formatValue(recordData?.code ?? node.metadata.code ?? node.id)
+      : type === "ASSET"
+        ? formatValue(recordData?.asset_id ?? node.metadata.asset_id ?? node.metadata["Asset Code"] ?? node.id)
+        : type === "SUPPLIER"
+          ? formatValue(recordData?.supplier_id ?? node.metadata.supplier_id ?? node.id)
+          : formatValue(node.id);
+  const status =
+    type === "ORG"
+      ? textOrNull(recordData?.status ?? node.metadata.status)
+      : type === "ASSET"
+        ? textOrNull(recordData?.asset_status ?? node.metadata.Status)
+        : textOrNull(node.metadata.status ?? node.metadata.Status);
+
+  const title =
+    type === "ORG"
+      ? formatValue(recordData?.name ?? node.name)
+      : type === "ASSET"
+        ? formatValue(recordData?.asset_name ?? node.name)
+        : type === "SUPPLIER"
+          ? formatValue(recordData?.supplier_name ?? node.name)
+          : node.name;
+
+  const baseFields: DetailField[] = [
+    textField("Name", title),
+    textField(type === "ASSET" ? "Asset ID" : type === "SUPPLIER" ? "Supplier ID" : "Code / ID", codeOrId),
+    field("Status", renderStatus(status)),
+  ];
+
+  let detailFields: DetailField[] = [];
+  if (type === "ORG") {
+    detailFields = [
+      textField("Org Type", recordData?.type ?? node.metadata.type ?? node.metadata["Org Type"]),
+      textField("City", recordData?.city ?? node.metadata.city),
+      textField("Country", recordData?.country ?? node.metadata.country),
+      textField("Parent ID", recordData?.parent_id ?? node.metadata.parent_id),
+    ];
+  } else if (type === "ASSET") {
+    detailFields = [
+      textField("UUID", recordData?.asset_uuid ?? node.metadata.asset_uuid),
+      textField("Asset Code", recordData?.asset_code ?? node.metadata["Asset Code"]),
+      textField("Type", recordData?.asset_type ?? node.metadata.Type),
+      textField("Criticality", recordData?.asset_criticality ?? recordData?.criticality_class ?? node.metadata.Criticality),
+      textField("Owner", recordData?.asset_owner ?? node.metadata.Owner),
+      textField("Manufacturer", recordData?.manufacturer ?? node.metadata.Manufacturer),
+      textField("Model", recordData?.model ?? node.metadata.Model),
+      textField("Version", recordData?.asset_version ?? node.metadata.Version),
+    ];
+  } else if (type === "SUPPLIER") {
+    detailFields = [
+      textField("Supplier Type", recordData?.supplier_type ?? node.metadata["Supplier Type"]),
+      textField("City", recordData?.supplier_city ?? node.metadata.City),
+      textField("Country", recordData?.supplier_country ?? node.metadata.Country),
+      textField("Contact Name", recordData?.contact_name ?? node.metadata["Contact Name"]),
+      textField("Contact Email", recordData?.contact_email ?? node.metadata["Contact Email"]),
+      textField("Contact Phone", recordData?.contact_phone),
+    ];
+  } else {
+    detailFields = Object.entries(node.metadata)
+      .slice(0, 8)
+      .map(([key, value]) => textField(key.replace(/_/g, " "), value));
+  }
+
+  return {
+    node,
+    type,
+    title,
+    codeOrId,
+    status,
+    fields: [...baseFields, ...detailFields],
+    relationships: buildRelationshipSummary(node, orgTree, assets, suppliers),
+    metadata: Object.entries(node.metadata)
+      .filter(([, value]) => textOrNull(value))
+      .slice(0, 8)
+      .map(([key, value]) => textField(key.replace(/_/g, " "), value)),
+    navigationId: resolveNavigationId(node),
+    viewPermission: getViewPermission(type),
+  };
+}
+
+function GraphLoadingState() {
+  return (
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-50">
+      <div className="rounded-lg border border-slate-200 bg-white px-5 py-4 text-center shadow-sm">
+        <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-blue-600" />
+        <p className="text-sm font-medium text-slate-700">Loading infrastructure graph...</p>
+      </div>
+    </div>
+  );
+}
+
+interface ZoomToolbarProps {
+  disabled: boolean;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onFitView: () => void;
+  onReset: () => void;
+}
+
+function ZoomToolbar({ disabled, onZoomIn, onZoomOut, onFitView, onReset }: ZoomToolbarProps) {
+  const controls = [
+    { key: "zoom-in", label: "Zoom in", icon: <ZoomIn className="h-4 w-4" />, onClick: onZoomIn },
+    { key: "zoom-out", label: "Zoom out", icon: <ZoomOut className="h-4 w-4" />, onClick: onZoomOut },
+    { key: "fit", label: "Fit view", icon: <Maximize2 className="h-4 w-4" />, onClick: onFitView },
+    { key: "reset", label: "Reset", icon: <RotateCcw className="h-4 w-4" />, onClick: onReset },
+  ];
+
+  return (
+    <div className="nodrag nowheel pointer-events-auto absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-lg border border-white/80 bg-white/95 p-1.5 shadow-xl backdrop-blur">
+      {controls.map((control) => (
+        <Button
+          key={control.key}
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={control.onClick}
+          disabled={disabled}
+          title={control.label}
+          aria-label={control.label}
+          className="h-8 w-8 rounded-md text-slate-700 hover:bg-slate-100"
+        >
+          {control.icon}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export function GraphHierarchyPage() {
   const header = getPageHeaderConfig("infrastructure-graph");
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<GraphNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<GraphFilters>(initialFilters);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
-  
-  // Tooltip state
-  const [hoveredNode, setHoveredNode] = useState<{ data: GraphNodeData; position: { x: number; y: number } } | null>(null);
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
-  
-  // Drawer state
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerData, setDrawerData] = useState<{
-    type: 'ORG' | 'ASSET' | 'SUPPLIER';
-    id: string;
-    data: Record<string, unknown>;
-  } | null>(null);
-  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [selectedDetail, setSelectedDetail] = useState<NodeDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
-  // Data refs
   const orgTreeRef = useRef<OrgNode[]>([]);
   const assetsRef = useRef<AssetRecord[]>([]);
   const suppliersRef = useRef<SupplierRecord[]>([]);
 
-  // Memoized graph data for performance
-  const memoizedGraphData = useRef<{
-    nodes: Node<GraphNodeData>[];
-    edges: Edge[];
-  } | null>(null);
-
-  // Node counts
   const nodeCounts = useMemo<NodeCounts>(() => {
-    const counts = { ORG: 0, ASSET: 0, SUPPLIER: 0 };
+    const counts: NodeCounts = { ORG: 0, ASSET: 0, SUPPLIER: 0 };
     nodes.forEach((node) => {
-      const type = node.data.type;
-      if (type === 'ORG' || type === 'ASSETS_COLLAPSED') counts.ORG++;
-      if (type === 'ASSET') counts.ASSET++;
-      if (type === 'SUPPLIER' || type === 'SUPPLIERS_COLLAPSED') counts.SUPPLIER++;
+      counts[node.data.type] = (counts[node.data.type] ?? 0) + 1;
     });
     return counts;
   }, [nodes]);
@@ -107,83 +432,70 @@ export function GraphHierarchyPage() {
     suppliers: nodeCounts.SUPPLIER,
   });
 
-  // Build graph data
   const buildGraph = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Fetch all data in parallel
-      const [orgs, assets, suppliers] = await Promise.all([
-        getOrgTree(),
-        getAssets(),
-        getSuppliers(),
-      ]);
+      const [orgs, assets, suppliers] = await Promise.all([getOrgTree(), getAssets(), getSuppliers()]);
 
       orgTreeRef.current = orgs;
       assetsRef.current = assets;
       suppliersRef.current = suppliers;
 
-      // Flatten org tree for nodes
-      const flattenOrgs = (nodes: OrgNode[]): OrgNode[] => {
-        return nodes.reduce<OrgNode[]>((acc, node) => {
-          acc.push(node);
-          if (node.children && node.children.length > 0) {
-            acc.push(...flattenOrgs(node.children));
-          }
-          return acc;
-        }, []);
-      };
-
       const flatOrgs = flattenOrgs(orgs);
-      const supplierMap = new Map(suppliers.map((s) => [s.supplier_id, s]));
-      
-      // Create org map for parent-child relationship lookup
-      const orgMap = new Map(flatOrgs.map(org => [org.id, org]));
-
-      // Create nodes
+      const orgMap = new Map(flatOrgs.map((org) => [org.id, org]));
+      const supplierMap = new Map(suppliers.map((supplier) => [supplier.supplier_id, supplier]));
       const graphNodes: Node<GraphNodeData>[] = [];
+      const graphEdges: Edge[] = [];
 
-      // Add ORG nodes
       flatOrgs.forEach((org) => {
+        const orgAssets = assets.filter((asset) => asset.org_node_id === org.id);
         graphNodes.push({
           id: `org_${org.id}`,
-          type: 'ORG',
+          type: "ORG",
           data: {
             id: org.id,
-            type: 'ORG',
+            type: "ORG",
             name: org.name,
             metadata: {
+              org_node_id: org.id,
               code: org.code,
               type: org.type,
               status: org.status,
               city: org.city,
               country: org.country,
               parent_id: org.parent_id,
-              'Assets Count': assets.filter((a) => a.org_node_id === org.id).length,
+              "Assets Count": orgAssets.length,
+              "Child Orgs": org.children?.length ?? 0,
             },
           },
           position: { x: 0, y: 0 },
         });
       });
 
-      // Add ASSET nodes
       assets.forEach((asset) => {
         const supplier = asset.supplier_id ? supplierMap.get(asset.supplier_id) : null;
+        const assetNodeId = `asset_${asset.asset_uuid || asset.asset_id}`;
         graphNodes.push({
-          id: `asset_${asset.asset_id}`,
-          type: 'ASSET',
+          id: assetNodeId,
+          type: "ASSET",
           data: {
-            id: asset.asset_id,
-            type: 'ASSET',
-            name: asset.asset_name || asset.asset_code || 'Unnamed Asset',
+            id: asset.asset_id || asset.asset_uuid,
+            type: "ASSET",
+            name: asset.asset_name || asset.asset_code || asset.asset_id || "Unnamed Asset",
             metadata: {
-              'Asset Code': asset.asset_code,
+              asset_uuid: asset.asset_uuid,
+              asset_id: asset.asset_id,
+              "Asset Code": asset.asset_code,
               Type: asset.asset_type,
               Status: asset.asset_status,
-              Criticality: asset.asset_criticality,
-              Supplier: supplier?.supplier_name || '-',
-              Value: asset.asset_value ? `${asset.asset_value} ${asset.asset_currency || ''}` : '-',
+              Criticality: asset.asset_criticality ?? asset.criticality_class,
+              Organization: asset.org_node_name,
+              org_node_id: asset.org_node_id,
+              Supplier: supplier?.supplier_name || asset.supplier_name || "-",
+              supplier_id: asset.supplier_id,
+              Value: asset.asset_value ? `${asset.asset_value} ${asset.asset_currency || ""}` : "-",
               Manufacturer: asset.manufacturer,
               Model: asset.model,
               Version: asset.asset_version,
@@ -193,495 +505,466 @@ export function GraphHierarchyPage() {
         });
       });
 
-      // Add SUPPLIER nodes
       suppliers.forEach((supplier) => {
-        const supplierAssets = assets.filter((a) => a.supplier_id === supplier.supplier_id);
+        const supplierAssets = assets.filter((asset) => asset.supplier_id === supplier.supplier_id);
         graphNodes.push({
           id: `supplier_${supplier.supplier_id}`,
-          type: 'SUPPLIER',
+          type: "SUPPLIER",
           data: {
             id: supplier.supplier_id,
-            type: 'SUPPLIER',
+            type: "SUPPLIER",
             name: supplier.supplier_name,
             metadata: {
-              'Supplier Type': supplier.supplier_type,
+              supplier_id: supplier.supplier_id,
+              "Supplier Type": supplier.supplier_type,
               City: supplier.supplier_city,
               State: supplier.supplier_state,
               Country: supplier.supplier_country,
-              'Assets Provided': supplierAssets.length,
-              'Contact Name': supplier.contact_name,
-              'Contact Email': supplier.contact_email,
+              "Assets Provided": supplierAssets.length,
+              "Contact Name": supplier.contact_name,
+              "Contact Email": supplier.contact_email,
             },
           },
           position: { x: 0, y: 0 },
         });
       });
 
-      // Create edges
-      const graphEdges: Edge[] = [];
-
-      // ORG -> ORG edges (parent-child hierarchy) - using parent_id
       flatOrgs.forEach((org) => {
         if (org.parent_id && orgMap.has(org.parent_id)) {
           graphEdges.push({
             id: `edge_org_${org.parent_id}_org_${org.id}`,
             source: `org_${org.parent_id}`,
             target: `org_${org.id}`,
-            type: 'smoothstep',
-            style: { stroke: '#4f8cff', strokeWidth: 2 },
-            animated: false,
+            type: "smoothstep",
+            style: { stroke: "#2563eb", strokeWidth: 2 },
           });
         }
       });
 
-      // ORG -> ASSET edges
       assets.forEach((asset) => {
-        if (asset.org_node_id) {
+        const assetNodeId = `asset_${asset.asset_uuid || asset.asset_id}`;
+        if (asset.org_node_id && orgMap.has(asset.org_node_id)) {
           graphEdges.push({
-            id: `edge_org_${asset.org_node_id}_asset_${asset.asset_id}`,
+            id: `edge_org_${asset.org_node_id}_${assetNodeId}`,
             source: `org_${asset.org_node_id}`,
-            target: `asset_${asset.asset_id}`,
-            type: 'smoothstep',
-            style: { stroke: '#3b82f6', strokeWidth: 2 },
-            animated: false,
+            target: assetNodeId,
+            type: "smoothstep",
+            style: { stroke: "#0284c7", strokeWidth: 2 },
           });
         }
-      });
-
-      // ASSET -> SUPPLIER edges
-      assets.forEach((asset) => {
-        if (asset.supplier_id) {
+        if (asset.supplier_id && supplierMap.has(asset.supplier_id)) {
           graphEdges.push({
-            id: `edge_asset_${asset.asset_id}_supplier_${asset.supplier_id}`,
-            source: `asset_${asset.asset_id}`,
+            id: `edge_${assetNodeId}_supplier_${asset.supplier_id}`,
+            source: assetNodeId,
             target: `supplier_${asset.supplier_id}`,
-            type: 'smoothstep',
-            style: { stroke: '#a855f7', strokeWidth: 2 },
-            animated: false,
+            type: "smoothstep",
+            style: { stroke: "#7c3aed", strokeWidth: 2 },
           });
         }
       });
 
-      // Store memoized data
-      memoizedGraphData.current = { nodes: graphNodes, edges: graphEdges };
-
-      // Apply layout
-      const layouted = getLayoutedElements(graphNodes, graphEdges);
+      const layouted = getLayoutedElements(graphNodes, graphEdges, "LR");
       setNodes(layouted.nodes);
       setEdges(layouted.edges);
+      setFilters((previous) => {
+        const next = { ...initialFilters, ...previous };
+        graphNodes.forEach((node) => {
+          if (next[node.data.type] === undefined) next[node.data.type] = true;
+        });
+        return next;
+      });
     } catch (err) {
-      console.error('Failed to load graph data:', err);
-      setError('Unable to load infrastructure graph');
-      toast.error('Failed to load infrastructure graph data');
+      console.error("Failed to load graph data:", err);
+      setError("Unable to load infrastructure graph");
+      toast.error("Failed to load infrastructure graph data");
     } finally {
       setLoading(false);
     }
-  }, [setNodes, setEdges]);
+  }, [setEdges, setNodes]);
 
-  // Initial load
   useEffect(() => {
-    buildGraph();
+    void buildGraph();
   }, [buildGraph]);
 
-  // Filter nodes with memoization
-  const filteredNodes = useMemo(() => {
-    return nodes.filter((node) => {
-      const typeFilter = filters[node.data.type as keyof GraphFilters];
-      if (!typeFilter) return false;
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const typeFilteredNodes = useMemo(
+    () => nodes.filter((node) => filters[node.data.type] !== false),
+    [filters, nodes],
+  );
 
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        const name = node.data.name.toLowerCase();
-        const metadata = Object.values(node.data.metadata).some((v) =>
-          String(v).toLowerCase().includes(query)
-        );
-        return name.includes(query) || metadata;
-      }
+  const matchingNodeIds = useMemo(() => {
+    if (!normalizedSearch) return new Set<string>();
+    return new Set(typeFilteredNodes.filter((node) => searchableText(node).includes(normalizedSearch)).map((node) => node.id));
+  }, [normalizedSearch, typeFilteredNodes]);
 
-      return true;
+  const hasNoSearchMatches = Boolean(normalizedSearch && typeFilteredNodes.length > 0 && matchingNodeIds.size === 0);
+
+  const displayNodes = useMemo(() => {
+    if (hasNoSearchMatches) return [];
+    return typeFilteredNodes.map((node) => {
+      const isMatch = Boolean(normalizedSearch && matchingNodeIds.has(node.id));
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          searchMatched: isMatch,
+          dimmed: Boolean(normalizedSearch && !isMatch),
+        },
+      };
     });
-  }, [nodes, filters, searchQuery]);
+  }, [hasNoSearchMatches, matchingNodeIds, normalizedSearch, typeFilteredNodes]);
 
-  // Filter edges with memoization
-  const filteredEdges = useMemo(() => {
-    const visibleNodeIds = new Set(filteredNodes.map((n) => n.id));
-    return edges.filter(
-      (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)
-    );
-  }, [edges, filteredNodes]);
+  const displayEdges = useMemo(() => {
+    const visibleNodeIds = new Set(displayNodes.map((node) => node.id));
+    const activeSearch = Boolean(normalizedSearch && matchingNodeIds.size > 0);
+    return edges
+      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+      .map((edge) => {
+        if (!activeSearch) return edge;
+        const connectedToMatch = matchingNodeIds.has(edge.source) || matchingNodeIds.has(edge.target);
+        return {
+          ...edge,
+          animated: connectedToMatch,
+          style: {
+            ...edge.style,
+            opacity: connectedToMatch ? 0.95 : 0.18,
+            strokeWidth: connectedToMatch ? 3 : 1.5,
+          },
+        };
+      });
+  }, [displayNodes, edges, matchingNodeIds, normalizedSearch]);
 
-  // Filter handlers
-  const handleFilterChange = useCallback((type: 'ORG' | 'ASSET' | 'SUPPLIER', checked: boolean) => {
-    setFilters((prev) => ({ ...prev, [type]: checked }));
+  const clearFilters = useCallback(() => {
+    setSearchQuery("");
+    setFilters((previous) => Object.fromEntries(Object.keys(previous).map((key) => [key, true])));
+  }, []);
+
+  const handleFilterChange = useCallback((type: string, checked: boolean) => {
+    setFilters((previous) => ({ ...previous, [type]: checked }));
   }, []);
 
   const handleFitView = useCallback(() => {
-    reactFlowInstance?.fitView({ padding: 0.2, duration: 300 });
+    reactFlowInstance?.fitView({ padding: 0.18, duration: 300 });
+  }, [reactFlowInstance]);
+
+  const handleZoomIn = useCallback(() => {
+    reactFlowInstance?.zoomIn({ duration: 200 });
+  }, [reactFlowInstance]);
+
+  const handleZoomOut = useCallback(() => {
+    reactFlowInstance?.zoomOut({ duration: 200 });
+  }, [reactFlowInstance]);
+
+  const handleResetView = useCallback(() => {
+    reactFlowInstance?.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 300 });
   }, [reactFlowInstance]);
 
   const handleRefresh = useCallback(() => {
-    buildGraph();
+    void buildGraph();
   }, [buildGraph]);
 
   useEffect(() => {
-    if (!reactFlowInstance || filteredNodes.length === 0) return;
-
+    if (!reactFlowInstance || displayNodes.length === 0) return;
     const frame = window.requestAnimationFrame(() => {
-      reactFlowInstance.fitView({ padding: 0.2, duration: 250 });
+      reactFlowInstance.fitView({ padding: 0.18, duration: 250 });
     });
-
     return () => window.cancelAnimationFrame(frame);
-  }, [reactFlowInstance, filteredNodes.length, filteredEdges.length]);
-
-  // Search highlight and center
-  useEffect(() => {
-    if (searchQuery && filteredNodes.length > 0 && reactFlowInstance) {
-      const firstMatch = filteredNodes[0];
-      reactFlowInstance.fitView({
-        padding: 0.5,
-        duration: 300,
-      });
-      // Optionally pan to the node
-      const node = nodes.find((n) => n.id === firstMatch.id);
-      if (node) {
-        reactFlowInstance.setCenter(node.position.x + 110, node.position.y + 40, {
-          zoom: 1.2,
-          duration: 300,
-        });
-      }
-    }
-  }, [searchQuery, filteredNodes, reactFlowInstance, nodes]);
-
-  // Mouse move for tooltip
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    setMousePosition({ x: e.clientX, y: e.clientY });
-  }, []);
-
-  // Node handlers
-  const handleNodeMouseEnter = useCallback(
-    (_: React.MouseEvent, node: Node<GraphNodeData>) => {
-      setHoveredNode({
-        data: node.data,
-        position: { x: mousePosition.x, y: mousePosition.y },
-      });
-    },
-    [mousePosition]
-  );
-
-  const handleNodeMouseLeave = useCallback(() => {
-    setHoveredNode(null);
-  }, []);
+  }, [displayEdges.length, displayNodes.length, reactFlowInstance]);
 
   const handleNodeClick = useCallback(
     async (event: React.MouseEvent, node: Node<GraphNodeData>) => {
       event.stopPropagation();
-      
-      setDrawerOpen(true);
-      setDrawerData({
-        type: node.data.type as 'ORG' | 'ASSET' | 'SUPPLIER',
-        id: node.data.id,
-        data: node.data.metadata,
-      });
 
-      // Load additional details
-      setDrawerLoading(true);
+      const baseDetail = buildDetailFromNode(node.data, orgTreeRef.current, assetsRef.current, suppliersRef.current);
+      setSelectedDetail(baseDetail);
+
+      if (!isNavigableNodeType(node.data.type)) return;
+
+      setDetailLoading(true);
       try {
-        let detailData: Record<string, unknown> = {};
-        
-        if (node.data.type === 'ORG') {
-          const org = await getOrgById(node.data.id);
-          detailData = {
-            name: org.name,
-            code: org.code,
-            type: org.type,
-            status: org.status,
-            address: org.address,
-            city: org.city,
-            state: org.state,
-            country: org.country,
-            'Parent ID': org.parent_id,
-            lat: org.lat,
-            long: org.long,
-          };
-        } else if (node.data.type === 'ASSET') {
-          const asset = await getAssetById(node.data.id);
-          detailData = {
-            'Asset Name': asset.asset_name,
-            'Asset Code': asset.asset_code,
-            'Asset Type': asset.asset_type,
-            'Asset Status': asset.asset_status,
-            'Asset Criticality': asset.asset_criticality,
-            'Organization': asset.org_node_name,
-            'Supplier': asset.supplier_name,
-            'Serial Number': asset.asset_serial_no,
-            Manufacturer: asset.manufacturer,
-            Model: asset.model,
-            Version: asset.asset_version,
-            'Purchase Date': asset.asset_purchase_dt,
-            'Commission Date': asset.asset_commission_dt,
-            'Purchase Ref': asset.asset_purchase_ref,
-            'Warranty (months)': asset.warranty_period,
-            Value: asset.asset_value ? `${asset.asset_value} ${asset.asset_currency || ''}` : '-',
-            Owner: asset.asset_owner,
-            Description: asset.asset_description,
-          };
-        } else if (node.data.type === 'SUPPLIER') {
-          const supplier = await getSupplierById(node.data.id);
-          detailData = {
-            'Supplier Name': supplier.supplier_name,
-            'Supplier Type': supplier.supplier_type,
-            Address: supplier.supplier_add1,
-            'Address 2': supplier.supplier_add2,
-            City: supplier.supplier_city,
-            State: supplier.supplier_state,
-            'Pincode': supplier.supplier_pincode,
-            Country: supplier.supplier_country,
-            'Contact Name': supplier.contact_name,
-            'Contact Email': supplier.contact_email,
-            'Contact Phone': supplier.contact_phone,
-          };
+        let detailRecord: OrgNode | AssetRecord | SupplierRecord | null = null;
+        if (node.data.type === "ORG") {
+          detailRecord = await getOrgById(node.data.id);
+        } else if (node.data.type === "ASSET") {
+          const assetUuid = metadataValue(node.data, "asset_uuid");
+          if (assetUuid) {
+            detailRecord = await getAssetById(assetUuid);
+          }
+        } else if (node.data.type === "SUPPLIER") {
+          detailRecord = await getSupplierById(node.data.id);
         }
-
-        setDrawerData({
-          type: node.data.type as 'ORG' | 'ASSET' | 'SUPPLIER',
-          id: node.data.id,
-          data: detailData,
-        });
+        setSelectedDetail(buildDetailFromNode(node.data, orgTreeRef.current, assetsRef.current, suppliersRef.current, detailRecord));
       } catch (err) {
-        console.error('Failed to load details:', err);
-        toast.error('Failed to load details');
+        console.error("Failed to load graph node detail:", err);
+        toast.error("Failed to load node detail");
       } finally {
-        setDrawerLoading(false);
+        setDetailLoading(false);
       }
     },
-    []
+    [],
   );
 
-  // Loading state
+  const handleViewRecord = useCallback(() => {
+    if (!selectedDetail?.navigationId || !isNavigableNodeType(selectedDetail.type)) return;
+    if (selectedDetail.type === "ASSET") navigateToAsset(selectedDetail.navigationId);
+    if (selectedDetail.type === "SUPPLIER") navigateToSupplier(selectedDetail.navigationId);
+    if (selectedDetail.type === "ORG") navigateToOrg(selectedDetail.navigationId);
+  }, [selectedDetail]);
+
+  const graphIsEmpty = !loading && !error && nodes.length === 0;
+  const noVisibleNodes = !loading && !error && nodes.length > 0 && displayNodes.length === 0;
+  const noVisibleReason = hasNoSearchMatches ? "No nodes match the current search." : "No nodes match the selected filters.";
+  const graphReady = !loading || nodes.length > 0;
+
   return (
-    <div className={PAGE_LAYOUT_SHELL_CLASS} onMouseMove={handleMouseMove}>
+    <div className={PAGE_LAYOUT_SHELL_CLASS}>
       <CommonPageHeader
         breadcrumbs={header.breadcrumbs}
         sectionLabel={header.sectionLabel}
-        title={header.title}
-        subtitle={header.subtitle}
-        search={header.searchPlaceholder ? {
-          value: searchQuery,
-          placeholder: header.searchPlaceholder,
-          onChange: setSearchQuery,
-          onClear: () => setSearchQuery(''),
-          disabled: loading && nodes.length === 0,
-        } : undefined}
+        title="Infrastructure Graph"
+        subtitle="Explore organization, asset, and supplier relationships"
         stats={headerStats}
         primaryAction={header.primaryAction ? { ...header.primaryAction, onClick: handleFitView, disabled: !reactFlowInstance } : undefined}
         secondaryActions={[
           {
-            ...(header.secondaryActions?.[0] ?? { key: "refresh", label: "Refresh", variant: "secondary" }),
+            ...(header.secondaryActions?.[0] ?? { key: "refresh", label: "Refresh", variant: "secondary", icon: "refresh" }),
             onClick: handleRefresh,
             disabled: loading && nodes.length === 0,
           },
         ]}
       />
 
-      <div className={PAGE_CONTENT_CLASS}>
-        <GraphControls
-          filters={filters}
-          onFilterChange={handleFilterChange}
-          nodeCounts={nodeCounts}
-        />
-
-        {loading && nodes.length === 0 ? (
-          <div className="flex min-h-[620px] items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="text-center">
-              <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-blue-500/20 border-t-blue-500" />
-              <p className="text-sm text-slate-500">Loading infrastructure graph...</p>
-            </div>
-          </div>
-        ) : error && nodes.length === 0 ? (
-          <div className="flex min-h-[620px] items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="max-w-md text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-50">
-                <svg className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <p className="mb-2 font-medium text-slate-900">{error}</p>
-              <button
-                onClick={handleRefresh}
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="h-[calc(100vh-15rem)] min-h-[760px] overflow-hidden rounded-2xl border border-slate-200 bg-[#0e1117] shadow-sm">
+      <div className={cn(PAGE_CONTENT_CLASS, "min-h-0")}>
+        <div className="relative h-[calc(100vh-13.5rem)] min-h-[640px] flex-1 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 shadow-sm">
+          {graphReady && !error && nodes.length > 0 ? (
             <ReactFlow
-              nodes={filteredNodes}
-              edges={filteredEdges}
+              nodes={displayNodes}
+              edges={displayEdges}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               nodeTypes={nodeTypes}
               onNodeClick={handleNodeClick}
-              onNodeMouseEnter={handleNodeMouseEnter}
-              onNodeMouseLeave={handleNodeMouseLeave}
               onInit={(instance) => {
                 setReactFlowInstance(instance);
-                window.requestAnimationFrame(() => {
-                  instance.fitView({ padding: 0.2 });
-                });
+                window.requestAnimationFrame(() => instance.fitView({ padding: 0.18 }));
               }}
               fitView
-              fitViewOptions={{ padding: 0.2 }}
-              minZoom={0.1}
-              maxZoom={2}
+              fitViewOptions={{ padding: 0.18 }}
+              minZoom={0.12}
+              maxZoom={2.4}
               defaultEdgeOptions={{
-                type: 'smoothstep',
+                type: "smoothstep",
                 style: { strokeWidth: 2 },
               }}
-              className="h-full w-full bg-[#0e1117]"
+              className="h-full min-h-[640px] w-full bg-slate-50"
             >
-              <Background
-                variant={BackgroundVariant.Dots}
-                gap={24}
-                size={1}
-                color="#334155"
-                style={{ background: '#0e1117' }}
-              />
+              <Background variant={BackgroundVariant.Dots} gap={24} size={1.3} color="#cbd5e1" />
 
-              <div
-                className="absolute inset-0 pointer-events-none opacity-20"
-                style={{
-                  backgroundImage: `
-                    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
-                    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px)
-                  `,
-                  backgroundSize: '40px 40px',
-                }}
-              />
-
-              <div
-                className="absolute inset-0 pointer-events-none"
-                style={{
-                  background: 'radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.08) 0%, transparent 50%)',
-                }}
-              />
-
-              <Controls
-                className="!rounded-lg !border-slate-700/50 !bg-slate-800/90 !shadow-xl"
-                style={{
-                  backgroundColor: 'rgba(30, 41, 59, 0.9)',
-                  border: '1px solid rgba(51, 65, 85, 0.5)',
-                  borderRadius: '8px',
-                }}
-              />
+              <div className="absolute left-4 top-4 z-20">
+                <GraphControls
+                  filters={filters}
+                  onFilterChange={handleFilterChange}
+                  nodeCounts={nodeCounts}
+                  searchQuery={searchQuery}
+                  onSearchChange={setSearchQuery}
+                  onClear={clearFilters}
+                  disabled={loading && nodes.length === 0}
+                />
+              </div>
 
               <MiniMap
                 nodeColor={(node) => {
                   switch (node.data?.type) {
-                    case 'ORG':
-                      return '#3b82f6';
-                    case 'ASSET':
-                      return '#22c55e';
-                    case 'SUPPLIER':
-                      return '#a855f7';
+                    case "ORG":
+                      return "#2563eb";
+                    case "ASSET":
+                      return "#059669";
+                    case "SUPPLIER":
+                      return "#7c3aed";
                     default:
-                      return '#64748b';
+                      return "#64748b";
                   }
                 }}
-                maskColor="rgba(15, 23, 42, 0.8)"
-                className="!rounded-lg !border-slate-700/50 !bg-slate-900/90"
-                style={{
-                  backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                  border: '1px solid rgba(51, 65, 85, 0.5)',
-                  borderRadius: '8px',
-                }}
+                maskColor="rgba(226, 232, 240, 0.72)"
+                pannable
+                zoomable
+                className="!bottom-4 !left-4 !rounded-lg !border !border-white/80 !bg-white/95 !shadow-xl"
               />
             </ReactFlow>
+          ) : null}
 
-            {hoveredNode && (
-              <Tooltip
-                data={hoveredNode.data}
-                position={{ x: mousePosition.x, y: mousePosition.y }}
+          {loading && nodes.length === 0 ? <GraphLoadingState /> : null}
+
+          {error && nodes.length === 0 ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-50 p-6">
+              <EmptyState
+                title="Graph failed to load"
+                description={error}
+                icon={<AlertTriangle className="h-5 w-5 text-red-500" />}
+                action={
+                  <Button type="button" variant="secondary" onClick={handleRefresh}>
+                    <RefreshCcw className="h-4 w-4" />
+                    Try Again
+                  </Button>
+                }
+                className="min-h-56 max-w-lg border-slate-300 bg-white"
               />
-            )}
-          </div>
-        )}
+            </div>
+          ) : null}
+
+          {graphIsEmpty ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-50 p-6">
+              <EmptyState
+                title="No graph data"
+                description="No organization, asset, or supplier relationships are available."
+                icon={<Network className="h-5 w-5 text-slate-500" />}
+                action={
+                  <Button type="button" variant="secondary" onClick={handleRefresh}>
+                    <RefreshCcw className="h-4 w-4" />
+                    Refresh
+                  </Button>
+                }
+                className="min-h-56 max-w-lg border-slate-300 bg-white"
+              />
+            </div>
+          ) : null}
+
+          {noVisibleNodes ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-50/85 p-6 backdrop-blur-sm">
+              <EmptyState
+                title="No matching nodes"
+                description={noVisibleReason}
+                action={
+                  <Button type="button" variant="secondary" onClick={clearFilters}>
+                    Clear Filters
+                  </Button>
+                }
+                className="min-h-52 max-w-lg border-slate-300 bg-white"
+              />
+            </div>
+          ) : null}
+
+          {loading && nodes.length > 0 ? (
+            <div className="absolute right-4 top-4 z-20 inline-flex items-center gap-2 rounded-lg border border-white/80 bg-white/95 px-3 py-2 text-xs font-medium text-slate-600 shadow-lg">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+              Refreshing
+            </div>
+          ) : null}
+
+          <ZoomToolbar
+            disabled={!reactFlowInstance || displayNodes.length === 0}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onFitView={handleFitView}
+            onReset={handleResetView}
+          />
+        </div>
       </div>
 
-      {/* Detail Drawer */}
-      <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        title={drawerData ? `${drawerData.type} Detail` : 'Detail'}
-        description="Read-only information"
-        width="w-[28rem]"
+      <RightPanel
+        open={Boolean(selectedDetail)}
+        onClose={() => setSelectedDetail(null)}
+        title={selectedDetail?.title ?? "Node Detail"}
+        description={selectedDetail ? `${typeStyles[selectedDetail.type]?.label ?? selectedDetail.type} node` : undefined}
+        widthClassName="max-w-lg"
+        footer={
+          selectedDetail?.navigationId && selectedDetail.viewPermission ? (
+            <PermissionGuard
+              permission={selectedDetail.viewPermission}
+              fallback={
+                <Button type="button" fullWidth disabled>
+                  View Record
+                </Button>
+              }
+            >
+              <Button type="button" fullWidth onClick={handleViewRecord}>
+                <ExternalLink className="h-4 w-4" />
+                View Record
+              </Button>
+            </PermissionGuard>
+          ) : (
+            <Button type="button" fullWidth disabled>
+              View Record
+            </Button>
+          )
+        }
       >
-        <div className="p-5">
-          {drawerLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="w-8 h-8 border-3 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
-            </div>
-          ) : drawerData ? (
-            <div className="space-y-4">
-              {/* Header */}
-              <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                <div
-                  className={`
-                    w-10 h-10 rounded-lg flex items-center justify-center
-                    ${drawerData.type === 'ORG' ? 'bg-blue-100 text-blue-600' : ''}
-                    ${drawerData.type === 'ASSET' ? 'bg-green-100 text-green-600' : ''}
-                    ${drawerData.type === 'SUPPLIER' ? 'bg-purple-100 text-purple-600' : ''}
-                  `}
-                >
-                  {drawerData.type === 'ORG' && (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                    </svg>
-                  )}
-                  {drawerData.type === 'ASSET' && (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                    </svg>
-                  )}
-                  {drawerData.type === 'SUPPLIER' && (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 00-10.026 0 1.106 1.106 0 00-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12" />
-                    </svg>
-                  )}
-                </div>
-                <div>
-                  <span
-                    className={`
-                      inline-block px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded-md
-                      ${drawerData.type === 'ORG' ? 'bg-blue-100 text-blue-700' : ''}
-                      ${drawerData.type === 'ASSET' ? 'bg-green-100 text-green-700' : ''}
-                      ${drawerData.type === 'SUPPLIER' ? 'bg-purple-100 text-purple-700' : ''}
-                    `}
-                  >
-                    {drawerData.type}
-                  </span>
-                </div>
+        {selectedDetail ? (
+          <div className="space-y-5">
+            <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border", typeStyles[selectedDetail.type]?.className ?? "border-slate-200 bg-slate-100 text-slate-700")}>
+                {typeStyles[selectedDetail.type]?.icon ?? <Network className="h-4 w-4" />}
               </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={cn("inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-semibold", typeStyles[selectedDetail.type]?.className ?? "border-slate-200 bg-slate-100 text-slate-700")}>
+                    {typeStyles[selectedDetail.type]?.label ?? selectedDetail.type}
+                  </span>
+                  {selectedDetail.status ? renderStatus(selectedDetail.status) : null}
+                </div>
+                <p className="mt-2 truncate text-base font-semibold text-slate-900">{selectedDetail.title}</p>
+                <p className="mt-1 break-all font-mono text-xs text-slate-500">{selectedDetail.codeOrId}</p>
+              </div>
+            </div>
 
-              {/* Details */}
-              <div className="space-y-3">
-                {Object.entries(drawerData.data).map(([key, value]) => (
-                  <div key={key} className="flex justify-between items-start">
-                    <span className="text-xs text-slate-500 capitalize">{key.replace(/_/g, ' ')}</span>
-                    <span className="text-sm text-slate-800 font-medium text-right max-w-[160px] truncate" title={String(value)}>
-                      {value === null || value === undefined || value === '' ? '-' : String(value)}
-                    </span>
+            {detailLoading ? (
+              <div className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading latest detail
+              </div>
+            ) : null}
+
+            <DetailSection title="Business Detail" fields={selectedDetail.fields} />
+
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Relationships</h3>
+              <div className="space-y-2">
+                {selectedDetail.relationships.map((group) => (
+                  <div key={group.label} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <p className="text-xs font-medium text-slate-500">{group.label}</p>
+                    {group.items.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {group.items.map((item) => (
+                          <span key={item} className="max-w-full truncate rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700" title={item}>
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-sm text-slate-500">{group.emptyLabel ?? "No related records"}</p>
+                    )}
                   </div>
                 ))}
               </div>
-            </div>
-          ) : (
-            <p className="text-sm text-slate-500">No data available</p>
-          )}
-        </div>
-      </Drawer>
+            </section>
+
+            <DetailSection title="Linked Metadata" fields={selectedDetail.metadata} compact />
+          </div>
+        ) : (
+          <EmptyState title="No node selected" description="Select a graph node to view detail." />
+        )}
+      </RightPanel>
     </div>
   );
 }
 
+function DetailSection({ title, fields, compact = false }: { title: string; fields: DetailField[]; compact?: boolean }) {
+  const visibleFields = fields.filter((item) => item.value !== null && item.value !== undefined && item.value !== "");
+  if (!visibleFields.length) {
+    return null;
+  }
+
+  return (
+    <section className="space-y-3">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</h3>
+      <div className={compact ? "space-y-2" : "grid grid-cols-1 gap-2"}>
+        {visibleFields.map((item) => (
+          <div key={item.label} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+            <p className="text-xs font-medium text-slate-500">{item.label}</p>
+            <div className="mt-1 break-words text-sm font-medium text-slate-900">{item.value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

@@ -1,18 +1,20 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { Card, CardHeader, CardBody, CardFooter } from "../components/ui/Card";
-import { Button } from "../components/ui/Button";
-import { Input, Toggle } from "../components/ui/Input";
-import { Checkbox } from "../components/ui/checkbox";
-import { Modal, ConfirmDialog } from "../components/ui/Modal";
+import { ArrowLeft, Edit3, Plus, Power, Save, Trash2, X } from "lucide-react";
+
+import { PermissionGuard } from "../auth/PermissionGuard";
 import type { NavPage } from "../auth/accessPolicy";
 import { useAuth } from "../auth/useAuth";
+import { Button } from "../components/ui/button";
+import { SearchInput } from "../components/ui/input";
 import { CommonPageHeader, PAGE_CONTENT_CLASS, PAGE_LAYOUT_SHELL_CLASS } from "../components/layout/CommonPageHeader";
 import { buildPageHeaderStats, getPageHeaderConfig } from "../components/layout/pageHeaderConfig";
+import { ConfirmStrip, EmptyState, FilterBar, SearchableCombobox, StatusBadge } from "../components/foundation";
 import { downloadCsv } from "../components/importExport/csv";
-import { LookupMaster, getAllMasters } from "../services/lookupMaster.service";
+import { navigateToLookupValues } from "../utils/moduleNavigation";
+import { type LookupMaster, getAllMasters } from "../services/lookupMaster.service";
 import {
-  LookupValue,
-  LookupValuePayload,
+  type LookupValue,
+  type LookupValuePayload,
   createValue,
   deleteValue,
   getAllValues,
@@ -31,6 +33,11 @@ interface ValueFormState {
   active: boolean;
 }
 
+type EditingRow = { type: "add" } | { type: "edit"; valueId: number } | null;
+type PendingAction =
+  | { type: "delete"; value: LookupValue }
+  | { type: "status"; value: LookupValue; nextActive: boolean };
+
 const EMPTY_VALUE_FORM: ValueFormState = {
   code: "",
   display: "",
@@ -48,15 +55,24 @@ const normalizeLookupCodeInput = (value: string): string =>
 
 const finalizeLookupCode = (value: string): string => normalizeLookupCodeInput(value).replace(/^_+|_+$/g, "");
 
+const lookupIdFromQuery = (): number | null => {
+  if (typeof window === "undefined") return null;
+
+  const rawLookupId = new URLSearchParams(window.location.search).get("lookup_id");
+  if (!rawLookupId) return null;
+
+  const parsedLookupId = Number(rawLookupId);
+  return Number.isFinite(parsedLookupId) ? parsedLookupId : null;
+};
+
 const getErrorMessage = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "response" in error) {
     const response = (error as { response?: { data?: { detail?: unknown; message?: string } } }).response;
     const detail = response?.data?.detail;
-    if (typeof detail === "string") {
-      return detail;
-    }
+
+    if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) {
-      return detail
+      const message = detail
         .map((item) => {
           if (typeof item === "string") return item;
           if (typeof item === "object" && item !== null && "msg" in item) {
@@ -66,26 +82,48 @@ const getErrorMessage = (error: unknown): string => {
         })
         .filter(Boolean)
         .join(" ");
+      if (message) return message;
     }
-    if (response?.data?.message) {
-      return response.data.message;
-    }
+    if (response?.data?.message) return response.data.message;
   }
 
-  if (error instanceof Error) {
-    return error.message;
-  }
-
+  if (error instanceof Error) return error.message;
   return "Something went wrong. Please try again.";
 };
 
 const getNextSortOrder = (values: LookupValue[]): string => {
-  if (values.length === 0) {
-    return "1";
-  }
+  if (values.length === 0) return "1";
 
   const currentMax = values.reduce((max, value) => Math.max(max, value.sort), 0);
   return String(currentMax + 1);
+};
+
+const makeValuePayload = (
+  selectedMasterId: number | null,
+  data: ValueFormState,
+): { payload: LookupValuePayload | null; error: string | null } => {
+  if (selectedMasterId === null) {
+    return { payload: null, error: "Select a lookup category first." };
+  }
+
+  const code = finalizeLookupCode(data.code);
+  const display = data.display.trim();
+  const sort = Number(data.sort);
+
+  if (!code) return { payload: null, error: "Value code is required." };
+  if (!display) return { payload: null, error: "Display name is required." };
+  if (!Number.isFinite(sort)) return { payload: null, error: "Sort order must be a valid number." };
+
+  return {
+    payload: {
+      master_id: selectedMasterId,
+      code,
+      display,
+      sort,
+      active: data.active,
+    },
+    error: null,
+  };
 };
 
 export function LookupValuesPage({ onNavigate }: LookupValuesPageProps) {
@@ -93,25 +131,21 @@ export function LookupValuesPage({ onNavigate }: LookupValuesPageProps) {
   const canManageLookup = hasPermission("LOOKUP_MANAGE");
   const canExportReport = hasPermission("REPORT_EXPORT");
   const header = getPageHeaderConfig("lookup-values");
+
   const [masters, setMasters] = useState<LookupMaster[]>([]);
   const [allValues, setAllValues] = useState<LookupValue[]>([]);
-
   const [selectedMasterId, setSelectedMasterId] = useState<number | null>(null);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [showForm, setShowForm] = useState(false);
-  const [showDelete, setShowDelete] = useState(false);
-  const [formMode, setFormMode] = useState<"add" | "edit">("add");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [editingRow, setEditingRow] = useState<EditingRow>(null);
   const [formData, setFormData] = useState<ValueFormState>(EMPTY_VALUE_FORM);
-  const [quickFormData, setQuickFormData] = useState<ValueFormState>(EMPTY_VALUE_FORM);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [quickFormError, setQuickFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isQuickSubmitting, setIsQuickSubmitting] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const selectedMaster = useMemo(
     () => masters.find((master) => master.id === selectedMasterId) ?? null,
@@ -119,38 +153,42 @@ export function LookupValuesPage({ onNavigate }: LookupValuesPageProps) {
   );
 
   const valuesForMaster = useMemo(() => {
-    if (selectedMasterId === null) {
-      return [];
-    }
+    if (selectedMasterId === null) return [];
 
-    return allValues.filter((value) => value.masterId === selectedMasterId);
+    return allValues
+      .filter((value) => value.masterId === selectedMasterId)
+      .sort((first, second) => first.sort - second.sort || first.code.localeCompare(second.code));
   }, [allValues, selectedMasterId]);
 
-  const filtered = useMemo(() => {
+  const filteredValues = useMemo(() => {
     const query = search.toLowerCase().trim();
-    if (!query) {
-      return valuesForMaster;
-    }
 
-    return valuesForMaster.filter(
-      (value) =>
-        value.code.toLowerCase().includes(query) ||
-        value.display.toLowerCase().includes(query),
-    );
-  }, [search, valuesForMaster]);
+    return valuesForMaster.filter((value) => {
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && value.active) ||
+        (statusFilter === "inactive" && !value.active);
+      if (!matchesStatus) return false;
+      if (!query) return true;
 
-  const selected = useMemo(
-    () => valuesForMaster.find((value) => value.id === selectedId) ?? null,
-    [selectedId, valuesForMaster],
-  );
-
-  const masterKeyById = useMemo(() => {
-    const map = new Map<number, string>();
-    masters.forEach((master) => {
-      map.set(master.id, master.key);
+      const statusText = value.active ? "active" : "inactive";
+      return [value.code, value.display, statusText]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
     });
-    return map;
-  }, [masters]);
+  }, [search, statusFilter, valuesForMaster]);
+
+  const masterOptions = useMemo(
+    () =>
+      masters.map((master) => ({
+        value: String(master.id),
+        label: master.key,
+        description: `${master.description || `${master.valueCount} values`} (${master.active ? "Active" : "Inactive"})`,
+      })),
+    [masters],
+  );
 
   const headerStats = buildPageHeaderStats(header.stats, {
     values: valuesForMaster.length,
@@ -168,22 +206,22 @@ export function LookupValuesPage({ onNavigate }: LookupValuesPageProps) {
       setAllValues(valueData);
 
       setSelectedMasterId((previousId) => {
-        if (masterData.length === 0) {
-          return null;
+        const requestedLookupId = lookupIdFromQuery();
+        if (requestedLookupId !== null && masterData.some((master) => master.id === requestedLookupId)) {
+          return requestedLookupId;
         }
 
         if (previousId !== null && masterData.some((master) => master.id === previousId)) {
           return previousId;
         }
 
-        return masterData[0].id;
+        return null;
       });
     } catch (loadError) {
       setError(getErrorMessage(loadError));
       setMasters([]);
       setAllValues([]);
       setSelectedMasterId(null);
-      setSelectedId(null);
     } finally {
       setLoading(false);
     }
@@ -193,675 +231,449 @@ export function LookupValuesPage({ onNavigate }: LookupValuesPageProps) {
     void loadData();
   }, [loadData]);
 
-  useEffect(() => {
-    setSelectedId((previousId) => {
-      if (valuesForMaster.length === 0) {
-        return null;
-      }
-
-      if (previousId !== null && valuesForMaster.some((value) => value.id === previousId)) {
-        return previousId;
-      }
-
-      return valuesForMaster[0].id;
-    });
-  }, [valuesForMaster]);
-
-  useEffect(() => {
-    setQuickFormData((previous) => ({
-      ...previous,
-      sort: getNextSortOrder(valuesForMaster),
-    }));
-  }, [valuesForMaster]);
-
-  const buildPayload = (data: ValueFormState): LookupValuePayload | null => {
-    if (selectedMasterId === null) {
-      setFormError("Select a lookup category first.");
-      return null;
-    }
-
-    const code = finalizeLookupCode(data.code);
-    const display = data.display.trim();
-    const sort = Number(data.sort);
-
-    if (!code) {
-      setFormError("Code is required.");
-      return null;
-    }
-
-    if (!display) {
-      setFormError("Display name is required.");
-      return null;
-    }
-
-    if (!Number.isFinite(sort)) {
-      setFormError("Sort order must be a valid number.");
-      return null;
-    }
-
-    return {
-      master_id: selectedMasterId,
-      code,
-      display,
-      sort,
-      active: data.active,
-    };
+  const clearRowState = (): void => {
+    setEditingRow(null);
+    setFormData(EMPTY_VALUE_FORM);
+    setFormError(null);
+    setPendingAction(null);
   };
 
-  const openAddModal = (): void => {
-    if (!canManageLookup) return;
-    setFormMode("add");
-    setFormError(null);
+  const handleMasterChange = (value: string | null): void => {
+    const nextMasterId = value ? Number(value) : null;
+    if (nextMasterId !== null && !Number.isFinite(nextMasterId)) return;
+
+    setSelectedMasterId(nextMasterId);
+    setSearch("");
+    setStatusFilter("all");
+    clearRowState();
+
+    if (nextMasterId !== null) {
+      navigateToLookupValues(nextMasterId);
+    } else if (typeof window !== "undefined") {
+      window.history.pushState({}, "", "/lookup-values");
+    }
+  };
+
+  const openAddRow = (): void => {
+    if (!canManageLookup || selectedMasterId === null) return;
+
+    setPendingAction(null);
+    setEditingRow({ type: "add" });
     setFormData({
       ...EMPTY_VALUE_FORM,
       sort: getNextSortOrder(valuesForMaster),
+      active: selectedMaster?.active ?? true,
     });
-    setShowForm(true);
+    setFormError(null);
   };
 
-  const openEditModal = (value: LookupValue): void => {
+  const openEditRow = (value: LookupValue): void => {
     if (!canManageLookup) return;
-    setFormMode("edit");
-    setFormError(null);
+
+    setPendingAction(null);
+    setEditingRow({ type: "edit", valueId: value.id });
     setFormData({
       code: value.code,
       display: value.display,
       sort: String(value.sort),
       active: value.active,
     });
-    setShowForm(true);
+    setFormError(null);
   };
 
-  const handleModalSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const handleSaveRow = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!canManageLookup) return;
+    if (!canManageLookup || !editingRow) return;
 
-    const payload = buildPayload(formData);
+    const { payload, error: validationError } = makeValuePayload(selectedMasterId, formData);
     if (!payload) {
+      setFormError(validationError);
       return;
     }
 
-    if (formMode === "edit" && selectedId === null) {
-      setFormError("Select a value to edit.");
-      return;
-    }
-
-    setFormError(null);
     setIsSubmitting(true);
+    setFormError(null);
     setError(null);
 
     try {
-      if (formMode === "add") {
+      if (editingRow.type === "add") {
         await createValue(payload);
-        console.log("Lookup value created successfully");
       } else {
-        if (selectedId !== null) {
-          await updateValue(selectedId, payload);
-          console.log("Lookup value updated successfully");
-        }
+        await updateValue(editingRow.valueId, payload);
       }
 
-      setShowForm(false);
-      setFormData(EMPTY_VALUE_FORM);
+      clearRowState();
       await loadData();
-    } catch (submitError) {
-      setFormError(getErrorMessage(submitError));
+    } catch (saveError) {
+      setFormError(getErrorMessage(saveError));
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleQuickAddSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (!canManageLookup) return;
+  const confirmPendingAction = async (): Promise<void> => {
+    if (!pendingAction || !canManageLookup) return;
 
-    if (selectedMasterId === null) {
-      setQuickFormError("Select a lookup category first.");
-      return;
-    }
-
-    const code = finalizeLookupCode(quickFormData.code);
-    const display = quickFormData.display.trim();
-    const sort = Number(quickFormData.sort);
-
-    if (!code) {
-      setQuickFormError("Code is required.");
-      return;
-    }
-
-    if (!display) {
-      setQuickFormError("Display name is required.");
-      return;
-    }
-
-    if (!Number.isFinite(sort)) {
-      setQuickFormError("Sort order must be a valid number.");
-      return;
-    }
-
-    setQuickFormError(null);
-    setIsQuickSubmitting(true);
+    setIsConfirming(true);
     setError(null);
 
     try {
-      // Lookup value status always depends on the master category
-      await createValue({
-        master_id: selectedMasterId,
-        code,
-        display,
-        sort,
-        active: selectedMaster?.active ?? true,
-      });
-      console.log("Lookup value created successfully");
-      setQuickFormData({
-        ...EMPTY_VALUE_FORM,
-        sort: getNextSortOrder(valuesForMaster),
-      });
+      if (pendingAction.type === "delete") {
+        await deleteValue(pendingAction.value.id);
+      } else {
+        await updateLookupValueStatus(pendingAction.value.id, pendingAction.nextActive);
+      }
+
+      setPendingAction(null);
       await loadData();
-    } catch (submitError) {
-      setQuickFormError(getErrorMessage(submitError));
+    } catch (actionError) {
+      setError(getErrorMessage(actionError));
     } finally {
-      setIsQuickSubmitting(false);
-    }
-  };
-
-  const handleDelete = async (): Promise<void> => {
-    if (selectedId === null) {
-      return;
-    }
-    if (!canManageLookup) return;
-
-    setIsDeleting(true);
-    setError(null);
-
-    try {
-      await deleteValue(selectedId);
-      console.log("Lookup value deleted successfully");
-      setShowDelete(false);
-      await loadData();
-    } catch (deleteError) {
-      setError(getErrorMessage(deleteError));
-    } finally {
-      setIsDeleting(false);
+      setIsConfirming(false);
     }
   };
 
   const handleExport = (): void => {
-    if (!canExportReport) return;
-    if (valuesForMaster.length === 0 || selectedMasterId === null) {
-      return;
-    }
+    if (!canExportReport || valuesForMaster.length === 0 || !selectedMaster) return;
 
     const headers = ["Sort", "Lookup Key", "Code", "Display Name", "Active"];
     const rows = valuesForMaster.map((value) => [
       String(value.sort),
-      masterKeyById.get(value.masterId) ?? "-",
+      selectedMaster.key,
       value.code,
       value.display,
       value.active ? "Yes" : "No",
     ]);
 
-    downloadCsv(`lookup-values-${selectedMaster?.key ?? "values"}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+    downloadCsv(`lookup-values-${selectedMaster.key}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
   };
+
+  // TODO: Add bulk reorder endpoint for smoother drag-drop reorder.
+  const handleBackToMaster = (): void => {
+    onNavigate?.("lookup-master");
+  };
+
+  const hasActiveFilters = Boolean(search.trim() || statusFilter !== "all");
+  const canAddValue = canManageLookup && selectedMasterId !== null;
 
   return (
     <div className={PAGE_LAYOUT_SHELL_CLASS}>
       <CommonPageHeader
         breadcrumbs={header.breadcrumbs}
         sectionLabel={header.sectionLabel}
-        title={header.title}
-        subtitle={selectedMaster ? `${selectedMaster.description || "Selected lookup category"} - ${selectedMaster.key}` : header.subtitle}
-        search={header.searchPlaceholder ? {
-          value: search,
-          placeholder: header.searchPlaceholder,
-          onChange: setSearch,
-          onClear: () => setSearch(""),
-          disabled: loading,
-        } : undefined}
+        title="Lookup Values"
+        subtitle={selectedMaster ? `Managing values for ${selectedMaster.key}` : "Select a lookup category to manage values."}
         stats={headerStats}
-        primaryAction={header.primaryAction && canManageLookup ? { ...header.primaryAction, onClick: openAddModal, disabled: selectedMasterId === null } : undefined}
-        secondaryActions={[
-          ...(canManageLookup ? [{
-            ...(header.secondaryActions?.[0] ?? { key: "import", label: "Import", variant: "secondary" }),
-            onClick: () => undefined,
-            disabled: true,
-          }] : []),
-          ...(canExportReport ? [{
-            ...(header.secondaryActions?.[1] ?? { key: "export", label: "Export", variant: "secondary" }),
-            onClick: handleExport,
-            disabled: valuesForMaster.length === 0,
-          }] : []),
-          ...(canManageLookup ? [{
-            ...(header.secondaryActions?.[2] ?? { key: "reorder", label: "Reorder Values", variant: "ghost" }),
-            onClick: () => undefined,
-            disabled: selectedMasterId === null || valuesForMaster.length === 0,
-          }] : []),
-          {
-            ...(header.secondaryActions?.[3] ?? { key: "back", label: "Back to Lookup Master", variant: "ghost" }),
-            onClick: () => onNavigate?.("lookup-master"),
-            disabled: false,
-          },
-        ]}
+        backAction={{
+          key: "lookup-master",
+          label: "Lookup Master",
+          icon: "back",
+          variant: "secondary",
+          onClick: handleBackToMaster,
+        }}
       />
 
       <div className={PAGE_CONTENT_CLASS}>
-        {error && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+          <button
+            type="button"
+            onClick={handleBackToMaster}
+            className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-slate-900"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Lookup Master
+          </button>
+          <span className="text-slate-300">/</span>
+          <span className="font-mono font-semibold text-slate-900">{selectedMaster?.key ?? "Select category"}</span>
+          <span className="text-slate-300">/</span>
+          <span>{valuesForMaster.length} values</span>
+        </div>
+
+        {error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        ) : null}
+
+        <FilterBar
+          activeFilters={[
+            ...(search.trim() ? [{ key: "search", label: `Search: ${search.trim()}`, onRemove: () => setSearch("") }] : []),
+            ...(statusFilter !== "all" ? [{ key: "status", label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter("all") }] : []),
+          ]}
+          onClearAll={hasActiveFilters ? () => {
+            setSearch("");
+            setStatusFilter("all");
+          } : undefined}
+        >
+          <SearchableCombobox
+            label="Lookup Category"
+            options={masterOptions}
+            value={selectedMasterId === null ? null : String(selectedMasterId)}
+            onChange={handleMasterChange}
+            placeholder="Select category..."
+            emptyText="No lookup categories found"
+            disabled={loading}
+            clearable={false}
+            className="min-w-64 flex-1"
+          />
+          <div className="min-w-64 flex-1">
+            <SearchInput
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onClear={() => setSearch("")}
+              placeholder="Search value code, display name, or status..."
+              className="h-10"
+              disabled={loading || selectedMasterId === null}
+            />
+          </div>
+          <label className="flex min-w-44 flex-col gap-1.5 text-sm font-medium text-slate-700">
+            Status
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as "all" | "active" | "inactive")}
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-normal text-slate-900 outline-none transition-[color,box-shadow] focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+              disabled={loading || selectedMasterId === null}
+            >
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <PermissionGuard permission="LOOKUP_MANAGE">
+              <Button type="button" onClick={openAddRow} disabled={!canAddValue || editingRow !== null || loading}>
+                <Plus className="h-4 w-4" />
+                Add Value
+              </Button>
+            </PermissionGuard>
+            {canExportReport ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleExport}
+                disabled={valuesForMaster.length === 0 || selectedMasterId === null}
+              >
+                Export Current Category
+              </Button>
+            ) : null}
+          </div>
+        </FilterBar>
+
+        {loading ? (
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-12 text-center text-sm text-slate-500">
+            Loading lookup values...
+          </div>
+        ) : !selectedMaster ? (
+          <EmptyState
+            title="Select a lookup category"
+            description="Choose a Lookup Master category to view and manage its dropdown values."
+          />
+        ) : filteredValues.length === 0 && editingRow?.type !== "add" ? (
+          <EmptyState
+            title="No lookup values found."
+            description="Add a value or adjust the search and status filters."
+          />
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="hidden grid-cols-[90px_minmax(150px,1.1fr)_minmax(220px,2fr)_120px_260px] gap-4 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 lg:grid">
+              <div>Sort</div>
+              <div>Value Code</div>
+              <div>Display Name</div>
+              <div>Status</div>
+              <div className="text-right">Actions</div>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {editingRow?.type === "add" ? (
+                <EditableValueRow
+                  formData={formData}
+                  formError={formError}
+                  isSubmitting={isSubmitting}
+                  mode="add"
+                  onCancel={clearRowState}
+                  onChange={setFormData}
+                  onSubmit={handleSaveRow}
+                />
+              ) : null}
+
+              {filteredValues.map((value) => {
+                const pendingForRow = pendingAction?.value.id === value.id ? pendingAction : null;
+                const isEditing = editingRow?.type === "edit" && editingRow.valueId === value.id;
+
+                if (isEditing) {
+                  return (
+                    <EditableValueRow
+                      key={value.id}
+                      formData={formData}
+                      formError={formError}
+                      isSubmitting={isSubmitting}
+                      mode="edit"
+                      onCancel={clearRowState}
+                      onChange={setFormData}
+                      onSubmit={handleSaveRow}
+                    />
+                  );
+                }
+
+                return (
+                  <div key={value.id}>
+                    <div className="grid gap-3 px-4 py-4 lg:grid-cols-[90px_minmax(150px,1.1fr)_minmax(220px,2fr)_120px_260px] lg:items-center lg:gap-4">
+                      <div>
+                        <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-md bg-slate-100 px-2 text-xs font-semibold text-slate-600">
+                          {value.sort}
+                        </span>
+                      </div>
+                      <div className="font-mono text-sm font-semibold text-slate-900">{value.code}</div>
+                      <div className="text-sm text-slate-700">{value.display}</div>
+                      <div>
+                        <StatusBadge status={value.active ? "active" : "inactive"} />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                        <PermissionGuard permission="LOOKUP_MANAGE">
+                          <Button type="button" variant="ghost" size="sm" onClick={() => openEditRow(value)} disabled={editingRow !== null}>
+                            <Edit3 className="h-4 w-4" />
+                            Edit
+                          </Button>
+                        </PermissionGuard>
+                        <PermissionGuard permission="LOOKUP_MANAGE">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={editingRow !== null || !selectedMaster.active}
+                            onClick={() => setPendingAction({ type: "status", value, nextActive: !value.active })}
+                          >
+                            <Power className="h-4 w-4" />
+                            {value.active ? "Deactivate" : "Activate"}
+                          </Button>
+                        </PermissionGuard>
+                        <PermissionGuard permission="LOOKUP_MANAGE">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                            disabled={editingRow !== null}
+                            onClick={() => setPendingAction({ type: "delete", value })}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </Button>
+                        </PermissionGuard>
+                      </div>
+                    </div>
+
+                    {pendingForRow ? (
+                      <div className="px-4 pb-4">
+                        <ConfirmStrip
+                          tone={pendingForRow.type === "delete" ? "danger" : "warning"}
+                          title={
+                            pendingForRow.type === "delete"
+                              ? `Delete ${value.code}?`
+                              : `${pendingForRow.nextActive ? "Activate" : "Deactivate"} ${value.code}?`
+                          }
+                          message={
+                            pendingForRow.type === "delete"
+                              ? `This value will be removed from ${selectedMaster.key}.`
+                              : pendingForRow.nextActive
+                                ? "This value will become available in dropdowns."
+                                : "This value will be hidden from active dropdown choices."
+                          }
+                          confirmLabel={isConfirming ? "Working..." : pendingForRow.type === "delete" ? "Delete" : "Confirm"}
+                          onConfirm={() => void confirmPendingAction()}
+                          onCancel={() => {
+                            if (!isConfirming) setPendingAction(null);
+                          }}
+                          disabled={isConfirming}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
 
-        <Card className="p-4">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider shrink-0">Filter by Key:</span>
-              <div className="flex gap-1 flex-wrap">
-                {masters.map((master) => (
-                  <button
-                    key={master.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedMasterId(master.id);
-                      setSelectedId(null);
-                      setSearch("");
-                    }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-all ${
-                      master.id === selectedMasterId
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                    }`}
-                  >
-                    {master.key}
-                  </button>
-                ))}
-              </div>
-            </div>
+        {!loading && selectedMaster ? (
+          <div className="text-xs text-slate-500">
+            Showing {filteredValues.length} of {valuesForMaster.length} values for {selectedMaster.key}
           </div>
-        </Card>
-
-        <div className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 font-mono text-base font-bold text-blue-700">
-              {selectedMaster?.key ?? "-"}
-            </div>
-            <div>
-              <div className="text-sm font-medium text-slate-700">{selectedMaster?.description || "Select a lookup category"}</div>
-              <div className="text-xs text-slate-400">
-                {valuesForMaster.length} total values - {valuesForMaster.filter((value) => value.active).length} active
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-12 gap-4">
-          <div className="col-span-8">
-            <Card padding="none">
-            <CardHeader
-              title={`Values: ${selectedMaster?.key ?? "-"}`}
-              description={loading ? "Loading..." : `${filtered.length} results`}
-            />
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200">
-{["Sort", "Lookup Key", "Code", "Display Name", "Status", "Actions"].map((header) => (
-                      <th key={header} className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide text-left">
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {loading && (
-                    <tr>
-<td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
-                        Loading values...
-                      </td>
-                    </tr>
-                  )}
-
-                  {!loading && filtered.length === 0 && (
-                    <tr>
-<td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
-                        No values found for the selected lookup category.
-                      </td>
-                    </tr>
-                  )}
-
-                  {!loading &&
-                    filtered.map((value) => (
-                      <tr
-                        key={value.id}
-                        className={`cursor-pointer transition-colors group ${
-                          value.id === selectedId ? "bg-blue-50/70 border-l-2 border-l-blue-500" : "hover:bg-slate-50"
-                        }`}
-                        onClick={() => setSelectedId(value.id)}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-center w-6 h-6 rounded bg-slate-100 text-slate-500 text-xs font-medium">
-                            {value.sort}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                            {masterKeyById.get(value.masterId) ?? "-"}
-                          </span>
-</td>
-                        <td className="px-4 py-3">
-                          <span className="font-mono text-xs font-bold px-2 py-1 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
-                            {value.code}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-medium text-slate-800">{value.display}</td>
-                        <td className="px-4 py-3">
-                          {canManageLookup ? <Checkbox
-                            checked={value.active}
-                            disabled={!selectedMaster?.active}
-                            onCheckedChange={(val) => {
-                              const newActive = Boolean(val);
-                              setAllValues((prev) =>
-                                prev.map((v) =>
-                                  v.id === value.id ? { ...v, active: newActive } : v
-                                )
-                              );
-                              updateLookupValueStatus(value.id, newActive);
-                            }}
-                          /> : <Checkbox checked={value.active} disabled={true} />}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100">
-                            {canManageLookup ? <Button
-                              variant="ghost"
-                              size="sm"
-                              type="button"
-                              title="View"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setSelectedId(value.id);
-                              }}
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
-                            </Button> : null}
-                            {canManageLookup ? <Button
-                              variant="ghost"
-                              size="sm"
-                              type="button"
-                              title="Edit"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setSelectedId(value.id);
-                                openEditModal(value);
-                              }}
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </Button> : null}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              type="button"
-                              title="Delete"
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setSelectedId(value.id);
-                                setShowDelete(true);
-                              }}
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-            </Card>
-          </div>
-
-          <div className="col-span-4 flex flex-col gap-4">
-            <Card padding="none">
-            <CardHeader title="Value Detail" />
-            <CardBody>
-              {selected ? (
-                <div className="space-y-3">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Selected Value</div>
-                    <div className="mt-1 font-mono text-xl font-bold text-blue-700">{selected.code}</div>
-                  </div>
-                  {[
-                    { label: "Lookup Key", value: masterKeyById.get(selected.masterId) ?? "-", mono: true },
-                    { label: "Display Name", value: selected.display, mono: false },
-                    { label: "Sort Order", value: String(selected.sort), mono: false },
-                  ].map(({ label, value, mono }) => (
-                    <div key={label} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
-                      <div className={`mt-1 text-sm font-medium text-slate-800 ${mono ? "font-mono" : ""}`}>{value}</div>
-                    </div>
-                  ))}
-                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Active</div>
-                    <div className="mt-1">
-                      {canManageLookup ? <Checkbox
-                        checked={selected.active}
-                        disabled={!selectedMaster?.active}
-                        onCheckedChange={(value) => {
-                          const newActive = Boolean(value);
-                          setAllValues((prev) =>
-                            prev.map((val) =>
-                              val.id === selected.id ? { ...val, active: newActive } : val
-                            )
-                          );
-                          updateLookupValueStatus(selected.id, newActive);
-                        }}
-                      /> : <Checkbox checked={selected.active} disabled={true} />}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center text-sm text-slate-400 py-4">No value selected.</div>
-              )}
-            </CardBody>
-{selected && canManageLookup && (
-              <CardFooter className="gap-2">
-                <Button variant="secondary" size="sm" className="w-full" type="button" onClick={() => openEditModal(selected)}>
-                  Edit Value
-                </Button>
-              </CardFooter>
-            )}
-          </Card>
-
-            {canManageLookup ? <Card padding="none">
-            <CardHeader title="Quick Add Value" />
-            <CardBody className="px-4 pb-4">
-              <form className="space-y-3" onSubmit={(event) => void handleQuickAddSubmit(event)}>
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-100">
-                  <span className="text-xs text-blue-600 font-semibold">Lookup Key:</span>
-                  <span className="font-mono text-xs font-bold text-blue-700">{selectedMaster?.key ?? "-"}</span>
-                  {selectedMaster && (
-                    <span className="ml-auto flex items-center gap-1.5">
-                      <span className="text-xs text-blue-500">Status:</span>
-                      <Checkbox
-                        checked={selectedMaster.active}
-                        disabled={true}
-                        className="h-3.5 w-3.5"
-                      />
-                    </span>
-                  )}
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Code</label>
-                  <Input
-                    placeholder="e.g. CORP"
-                    value={quickFormData.code}
-                    onChange={(event) =>
-                      setQuickFormData((previous) => ({
-                        ...previous,
-                        code: normalizeLookupCodeInput(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Display Name</label>
-                  <Input
-                    placeholder="e.g. Corporate"
-                    value={quickFormData.display}
-                    onChange={(event) =>
-                      setQuickFormData((previous) => ({
-                        ...previous,
-                        display: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sort Order</label>
-                  <Input
-                    type="number"
-                    placeholder="1"
-                    value={quickFormData.sort}
-                    onChange={(event) =>
-                      setQuickFormData((previous) => ({
-                        ...previous,
-                        sort: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-
-                {quickFormError && <p className="text-xs text-red-600">{quickFormError}</p>}
-
-                <Button size="sm" className="w-full" type="submit" disabled={selectedMasterId === null || isQuickSubmitting}>
-                  {isQuickSubmitting ? "Adding..." : "Add Value"}
-                </Button>
-              </form>
-            </CardBody>
-            </Card> : null}
-          </div>
-        </div>
+        ) : null}
       </div>
-
-      <Modal
-        open={showForm}
-        onClose={() => {
-          setShowForm(false);
-          setFormError(null);
-        }}
-        title={formMode === "add" ? `Add Value to ${selectedMaster?.key ?? "Lookup"}` : `Edit: ${selected?.code ?? "Value"}`}
-        description={`Configuring values for lookup key: ${selectedMaster?.key ?? "-"}`}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              type="button"
-              onClick={() => {
-                setShowForm(false);
-                setFormError(null);
-              }}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" form="lookup-value-form" disabled={isSubmitting}>
-              {isSubmitting ? "Saving..." : "Save Value"}
-            </Button>
-          </>
-        }
-      >
-        <form id="lookup-value-form" className="space-y-4" onSubmit={(event) => void handleModalSubmit(event)}>
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200">
-            <span className="text-xs text-slate-500">Lookup Key (read-only):</span>
-            <span className="font-mono text-xs font-bold text-slate-700">{selectedMaster?.key ?? "-"}</span>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Code</label>
-            <Input
-              placeholder="e.g. CORP"
-              required
-              value={formData.code}
-              onChange={(event) =>
-                setFormData((previous) => ({
-                  ...previous,
-                  code: normalizeLookupCodeInput(event.target.value),
-                }))
-              }
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Display Name</label>
-            <Input
-              placeholder="e.g. Corporate"
-              required
-              value={formData.display}
-              onChange={(event) =>
-                setFormData((previous) => ({
-                  ...previous,
-                  display: event.target.value,
-                }))
-              }
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sort Order</label>
-            <Input
-              type="number"
-              placeholder="1"
-              value={formData.sort}
-              onChange={(event) =>
-                setFormData((previous) => ({
-                  ...previous,
-                  sort: event.target.value,
-                }))
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Active</span>
-            <Toggle
-              pressed={formData.active}
-              onPressedChange={(pressed) =>
-                setFormData((previous) => ({
-                  ...previous,
-                  active: pressed,
-                }))
-              }
-            />
-          </div>
-
-          {formError && <p className="text-xs text-red-600">{formError}</p>}
-        </form>
-      </Modal>
-
-      <ConfirmDialog
-        open={showDelete}
-        onConfirm={() => void handleDelete()}
-        onCancel={() => {
-          if (!isDeleting) {
-            setShowDelete(false);
-          }
-        }}
-        title="Delete this value?"
-        message={
-          selected
-            ? `"${selected.code} - ${selected.display}" will be removed from ${selectedMaster?.key ?? "this category"}.`
-            : "Selected value will be removed from this category."
-        }
-        confirmLabel={isDeleting ? "Deleting..." : "Delete Value"}
-      />
     </div>
   );
 }
 
+interface EditableValueRowProps {
+  formData: ValueFormState;
+  formError: string | null;
+  isSubmitting: boolean;
+  mode: "add" | "edit";
+  onCancel: () => void;
+  onChange: React.Dispatch<React.SetStateAction<ValueFormState>>;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}
+
+function EditableValueRow({
+  formData,
+  formError,
+  isSubmitting,
+  mode,
+  onCancel,
+  onChange,
+  onSubmit,
+}: EditableValueRowProps) {
+  return (
+    <form className="bg-blue-50/40 px-4 py-4" onSubmit={onSubmit}>
+      <div className="grid gap-3 lg:grid-cols-[90px_minmax(150px,1.1fr)_minmax(220px,2fr)_120px_260px] lg:items-start lg:gap-4">
+        <input
+          type="number"
+          min={0}
+          value={formData.sort}
+          disabled={isSubmitting}
+          onChange={(event) => onChange((previous) => ({ ...previous, sort: event.target.value }))}
+          className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          aria-label="Sort order"
+        />
+        <input
+          type="text"
+          value={formData.code}
+          disabled={isSubmitting}
+          onChange={(event) => onChange((previous) => ({ ...previous, code: normalizeLookupCodeInput(event.target.value) }))}
+          placeholder="VALUE_CODE"
+          className="h-9 rounded-md border border-slate-300 bg-white px-3 font-mono text-sm font-semibold text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          aria-label="Value code"
+        />
+        <input
+          type="text"
+          value={formData.display}
+          disabled={isSubmitting}
+          onChange={(event) => onChange((previous) => ({ ...previous, display: event.target.value }))}
+          placeholder="Display name"
+          className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+          aria-label="Display name"
+        />
+        <label className="flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={formData.active}
+            disabled={isSubmitting}
+            onChange={(event) => onChange((previous) => ({ ...previous, active: event.target.checked }))}
+            className="h-4 w-4 rounded border-slate-300"
+          />
+          Active
+        </label>
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          <Button type="submit" size="sm" disabled={isSubmitting}>
+            <Save className="h-4 w-4" />
+            {isSubmitting ? "Saving..." : mode === "add" ? "Save Value" : "Save"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
+            <X className="h-4 w-4" />
+            Cancel
+          </Button>
+        </div>
+      </div>
+      {formError ? <div className="mt-2 text-sm text-red-600">{formError}</div> : null}
+    </form>
+  );
+}

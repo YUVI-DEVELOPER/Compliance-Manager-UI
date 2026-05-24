@@ -1,315 +1,175 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import React, { useEffect, useMemo, useState } from "react";
+import { Building2, CircleDollarSign, ExternalLink, FileJson, FileText, MapPin, RotateCw, Workflow } from "lucide-react";
 import { toast } from "sonner";
-import { Drawer } from "../ui/Modal";
-import { Button } from "../ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../ui/alert-dialog";
-import { getAssetById, AssetRecord } from "../../../services/asset.service";
-import {
-  AssetFinanceRecord,
-  deleteAssetFinance,
-  getAssetFinance,
-} from "../../../services/asset-finance.service";
-import {
-  AssetLocationRecord,
-  deleteAssetLocation,
-  getAssetLocation,
-} from "../../../services/asset-location.service";
-import {
-  getAssetAuthoredDocuments,
-  getReleaseAuthoredDocuments,
-} from "../../../services/authored-document.service";
-import {
-  getAssetQualificationDocuments,
-  getReleaseQualificationDocuments,
-} from "../../../services/qualification-document.service";
-import { getSupplierEvaluations } from "../../../services/supplier-evaluation.service";
-import { getAssetVectorizationSummary } from "../../../services/document-vectorization.service";
-import {
-  deleteDocumentLink,
-  DocumentLinkRecord,
-  getAssetDocuments,
-  getReleaseDocuments,
-  reprocessDocumentVectorization,
-} from "../../../services/document-link.service";
-import {
-  deleteRelease,
-  downloadImpactAssessment,
-  getReleasesByAssetId,
-  regenerateImpactAssessment,
-  ReleaseRecord,
-} from "../../../services/release.service";
+
+import { AssetRecord, getAssetById } from "../../../services/asset.service";
+import { AssetFinanceRecord, getAssetFinance } from "../../../services/asset-finance.service";
+import { AssetLocationRecord, getAssetLocation } from "../../../services/asset-location.service";
 import { OrgNode } from "../../../services/org.service";
 import { SupplierRecord } from "../../../services/supplier.service";
+import { PermissionGuard } from "../../auth/PermissionGuard";
+import {
+  navigateToAssetReleases,
+  navigateToDocumentIntelligence,
+  navigateToDocumentPortal,
+  navigateToPeriodicReview,
+  navigateToSupplierEvaluations,
+} from "../../utils/moduleNavigation";
 import { LookupOption } from "../../services/lookupValue.service";
-import {
-  buildOrgMap,
-  getAssetStatusBadgeClass,
-  getCriticalityBadgeClass,
-} from "./assetForm.shared";
-import { AuthoredDocumentPanel } from "./AuthoredDocumentPanel";
-import { AssetDocumentTable } from "./AssetDocumentTable";
-import { AssetDocumentHubPanel } from "./AssetDocumentHubPanel";
-import { AssetRagInsightsPanel } from "./AssetRagInsightsPanel";
-import { AssetFinanceModal } from "./AssetFinanceModal";
-import { AssetLifecycleTimeline } from "./AssetLifecycleTimeline";
-import { AssetLocationModal } from "./AssetLocationModal";
-import { AssetReleaseTable } from "./AssetReleaseTable";
-import { CreateDocumentLinkModal } from "./CreateDocumentLinkModal";
-import { CreateReleaseModal } from "./CreateReleaseModal";
-import { EditDocumentLinkModal } from "./EditDocumentLinkModal";
-import { EditReleaseModal } from "./EditReleaseModal";
-import { QualificationDocumentPanel } from "./QualificationDocumentPanel";
-import { SupplierEvaluationPanel } from "./SupplierEvaluationPanel";
-import {
-  DocumentLinkContext,
-  isDocumentVectorizationActive,
-  mapDocumentLinkAxiosError,
-  useOmsSourceSystemOptions,
-} from "./documentLinkForm.shared";
-import { ReleaseAssessmentModal } from "./ReleaseAssessmentModal";
-import { ReleaseDocumentsModal } from "./ReleaseDocumentsModal";
-import { mapReleaseAxiosError } from "./releaseForm.shared";
-import { useAuth } from "../../auth/useAuth";
+import { EmptyState, StatusBadge } from "../foundation";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Drawer } from "../ui/Modal";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { buildOrgMap, getCriticalityBadgeClass } from "./assetForm.shared";
 
-export type AssetDetailTab =
-  | "overview"
-  | "location"
-  | "finance"
-  | "references";
+export type AssetDetailTab = "overview" | "location" | "finance" | "references";
 
 interface AssetDetailDrawerProps {
   open: boolean;
   assetId: string | null;
-  onClose: () => void;
-  orgTree: OrgNode[];
-  suppliers: SupplierRecord[];
-  assetClasses: LookupOption[];
-  assetCategories: LookupOption[];
-  assetSubCategories: LookupOption[];
-  assetTypes: LookupOption[];
-  assetStatuses: LookupOption[];
-  currencies: LookupOption[];
-  depreciationMethods: LookupOption[];
-  assetClassGlOptions: LookupOption[];
-  criticalities: LookupOption[];
-  assetNatures: LookupOption[];
   initialTab?: AssetDetailTab;
+  onClose: () => void;
+  orgTree?: OrgNode[];
+  suppliers?: SupplierRecord[];
+  assetClasses?: LookupOption[];
+  assetCategories?: LookupOption[];
+  assetSubCategories?: LookupOption[];
+  assetTypes?: LookupOption[];
+  assetStatuses?: LookupOption[];
+  currencies?: LookupOption[];
+  depreciationMethods?: LookupOption[];
+  assetClassGlOptions?: LookupOption[];
+  criticalities?: LookupOption[];
+  assetNatures?: LookupOption[];
 }
 
-const mapAxiosErrorMessage = (error: unknown): string => {
-  if (!axios.isAxiosError(error)) {
-    return error instanceof Error ? error.message : "Unexpected error occurred";
-  }
-  const status = error.response?.status;
-  const data = error.response?.data as { message?: string; detail?: unknown } | undefined;
-  const detailMessage = typeof data?.detail === "string" ? data.detail : undefined;
-  if (status === 404) return detailMessage || data?.message || "Asset not found";
-  return detailMessage || data?.message || error.message || "Failed to load asset detail";
-};
+interface ReferenceCard {
+  title: string;
+  description: string;
+  action: string;
+  icon: React.ReactNode;
+  permission?: string;
+  anyOf?: string[];
+  onClick: () => void;
+}
 
-const findLookupLabel = (options: LookupOption[], code?: string | null): string => {
-  if (!code) return "-";
-  const found = options.find((item) => item.code === code);
-  return found?.value || code;
-};
+const detailTabs: Array<{ key: AssetDetailTab; label: string }> = [
+  { key: "overview", label: "Overview" },
+  { key: "location", label: "Location" },
+  { key: "finance", label: "Finance" },
+  { key: "references", label: "References" },
+];
 
 const formatValue = (value?: string | number | null): string => {
   if (value === undefined || value === null || String(value).trim() === "") return "-";
   return String(value);
 };
 
-const formatCurrencyValue = (value?: number | null, currency?: string | null): string => {
-  if (value === undefined || value === null) return "-";
-  return currency ? `${currency} ${value.toLocaleString()}` : value.toLocaleString();
-};
-
-const formatPercentValue = (value?: number | null): string => {
-  if (value === undefined || value === null) return "-";
-  return `${value.toFixed(2)}%`;
-};
-
 const formatDate = (value?: string | null): string => {
   if (!value) return "-";
-
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleDateString("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-  });
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
 };
 
-const getReleaseSortValue = (release: ReleaseRecord): number => {
-  const value = release.created_dt ?? release.modified_dt ?? release.end_dt;
-  if (!value) return 0;
-
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? 0 : parsed;
+const formatMoney = (value?: number | string | null, currency?: string | null): string => {
+  if (value === undefined || value === null || value === "") return "-";
+  const numeric = typeof value === "number" ? value : Number(value);
+  const rendered = Number.isFinite(numeric) ? numeric.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(value);
+  return currency ? `${currency} ${rendered}` : rendered;
 };
 
-const assetDetailTabs: AssetDetailTab[] = ["overview", "location", "finance", "references"];
-
-const normalizeAssetDetailTab = (tab?: AssetDetailTab | string | null): AssetDetailTab =>
-  assetDetailTabs.includes(tab as AssetDetailTab) ? (tab as AssetDetailTab) : "overview";
-
-interface AssetReferenceSummary {
-  documents: number;
-  releases: number;
-  supplierEvaluations: number;
-  intelligenceTrackedDocuments: number;
-  intelligenceChunks: number;
-  intelligenceStatus: string;
-}
-
-const emptyReferenceSummary: AssetReferenceSummary = {
-  documents: 0,
-  releases: 0,
-  supplierEvaluations: 0,
-  intelligenceTrackedDocuments: 0,
-  intelligenceChunks: 0,
-  intelligenceStatus: "No tracked documents",
+const findLookupLabel = (options: LookupOption[] = [], code?: string | null): string => {
+  if (!code) return "-";
+  const found = options.find((item) => item.code === code);
+  return found?.value || code;
 };
 
-const InfoField = ({ label, value }: { label: string; value: string }) => (
-  <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
-    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
-    <p className="text-sm font-medium text-slate-900">{value}</p>
+const statusKind = (status?: string | null): "active" | "inactive" | "pending" => {
+  if (status === "ACTIVE") return "active";
+  if (!status) return "pending";
+  return "inactive";
+};
+
+const FieldGrid = ({ children }: { children: React.ReactNode }) => (
+  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{children}</div>
+);
+
+const FieldItem = ({ label, value }: { label: string; value: React.ReactNode }) => (
+  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+    <p className="text-xs font-medium text-slate-500">{label}</p>
+    <div className="mt-1 break-words text-sm font-medium text-slate-900">{value}</div>
   </div>
 );
 
-const groupAssetSpecValues = (items: AssetRecord["asset_spec_values"]): Array<[string, NonNullable<AssetRecord["asset_spec_values"]>]> => {
-  const groups = new Map<string, NonNullable<AssetRecord["asset_spec_values"]>>();
-  (items ?? []).forEach((item) => {
-    const existing = groups.get(item.parameter_grouping) ?? [];
-    existing.push(item);
-    groups.set(item.parameter_grouping, existing);
-  });
-  return Array.from(groups.entries());
-};
+const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
+  <section className="space-y-3">
+    <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
+    {children}
+  </section>
+);
 
 export function AssetDetailDrawer({
   open,
   assetId,
-  onClose,
-  orgTree,
-  suppliers,
-  assetClasses,
-  assetCategories,
-  assetSubCategories,
-  assetTypes,
-  assetStatuses,
-  currencies,
-  depreciationMethods,
-  assetClassGlOptions,
-  criticalities,
-  assetNatures,
   initialTab = "overview",
+  onClose,
+  orgTree = [],
+  suppliers = [],
+  assetClasses = [],
+  assetCategories = [],
+  assetSubCategories = [],
+  assetTypes = [],
+  assetStatuses = [],
+  currencies = [],
+  depreciationMethods = [],
+  assetClassGlOptions = [],
+  criticalities = [],
+  assetNatures = [],
 }: AssetDetailDrawerProps) {
-  const { hasPermission, hasAnyPermission } = useAuth();
-  const canCreateDocument = hasAnyPermission(["DOCUMENT_LINK", "DOCUMENT_UPLOAD"]);
-  const canUpdateDocument = hasPermission("DOCUMENT_UPDATE");
-  const canDeleteDocument = hasPermission("DOCUMENT_DELETE");
-  const [asset, setAsset] = useState<AssetRecord | null>(null);
+  const [activeTab, setActiveTab] = useState<AssetDetailTab>(initialTab);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<AssetDetailTab>(normalizeAssetDetailTab(initialTab));
-  const [finance, setFinance] = useState<AssetFinanceRecord | null>(null);
-  const [financeLoading, setFinanceLoading] = useState(false);
-  const [financeModalOpen, setFinanceModalOpen] = useState(false);
-  const [deleteFinanceDialogOpen, setDeleteFinanceDialogOpen] = useState(false);
-  const [deletingFinance, setDeletingFinance] = useState(false);
+  const [asset, setAsset] = useState<AssetRecord | null>(null);
   const [location, setLocation] = useState<AssetLocationRecord | null>(null);
-  const [locationLoading, setLocationLoading] = useState(false);
-  const [locationModalOpen, setLocationModalOpen] = useState(false);
-  const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
-  const [deletingLocation, setDeletingLocation] = useState(false);
-  const [releases, setReleases] = useState<ReleaseRecord[]>([]);
-  const [releasesLoading, setReleasesLoading] = useState(false);
-  const [createReleaseOpen, setCreateReleaseOpen] = useState(false);
-  const [editReleaseId, setEditReleaseId] = useState<string | null>(null);
-  const [releaseToDelete, setReleaseToDelete] = useState<ReleaseRecord | null>(null);
-  const [deleteReleaseDialogOpen, setDeleteReleaseDialogOpen] = useState(false);
-  const [deletingRelease, setDeletingRelease] = useState(false);
-  const [documents, setDocuments] = useState<DocumentLinkRecord[]>([]);
-  const [documentsLoading, setDocumentsLoading] = useState(false);
-  const [createDocumentOpen, setCreateDocumentOpen] = useState(false);
-  const [editDocumentId, setEditDocumentId] = useState<string | null>(null);
-  const [linkedDocumentsOpen, setLinkedDocumentsOpen] = useState(false);
-  const [documentToDelete, setDocumentToDelete] = useState<DocumentLinkRecord | null>(null);
-  const [deleteDocumentDialogOpen, setDeleteDocumentDialogOpen] = useState(false);
-  const [deletingDocument, setDeletingDocument] = useState(false);
-  const [releaseDocumentsTarget, setReleaseDocumentsTarget] = useState<ReleaseRecord | null>(null);
-  const [assessmentReleaseId, setAssessmentReleaseId] = useState<string | null>(null);
-  const [assessmentReloadToken, setAssessmentReloadToken] = useState(0);
-  const [referenceSummary, setReferenceSummary] = useState<AssetReferenceSummary>(emptyReferenceSummary);
-  const [referencesLoading, setReferencesLoading] = useState(false);
-  const { options: sourceSystemOptions } = useOmsSourceSystemOptions(
-    open && Boolean(releaseDocumentsTarget),
+  const [finance, setFinance] = useState<AssetFinanceRecord | null>(null);
+
+  const orgMap = useMemo(() => buildOrgMap(orgTree), [orgTree]);
+  const supplierMap = useMemo(
+    () => new Map<string, string>(suppliers.map((supplier) => [supplier.supplier_id, supplier.supplier_name])),
+    [suppliers],
   );
 
   useEffect(() => {
-    if (!open) {
-      setActiveTab(normalizeAssetDetailTab(initialTab));
-      setFinance(null);
-      setFinanceLoading(false);
-      setFinanceModalOpen(false);
-      setDeleteFinanceDialogOpen(false);
-      setLocation(null);
-      setLocationLoading(false);
-      setLocationModalOpen(false);
-      setDeleteLocationDialogOpen(false);
-      setCreateReleaseOpen(false);
-      setEditReleaseId(null);
-      setReleaseToDelete(null);
-      setDeleteReleaseDialogOpen(false);
-      setCreateDocumentOpen(false);
-      setEditDocumentId(null);
-      setLinkedDocumentsOpen(false);
-      setDocumentToDelete(null);
-      setDeleteDocumentDialogOpen(false);
-      setReleaseDocumentsTarget(null);
-      setAssessmentReleaseId(null);
-      setAssessmentReloadToken(0);
-      setReferenceSummary(emptyReferenceSummary);
-      setReferencesLoading(false);
-      return;
-    }
-
-    setActiveTab(normalizeAssetDetailTab(initialTab));
-  }, [open, assetId, initialTab]);
+    if (!open) return;
+    setActiveTab(initialTab);
+  }, [initialTab, open]);
 
   useEffect(() => {
     if (!open || !assetId) {
       setAsset(null);
-      setLoading(false);
+      setLocation(null);
+      setFinance(null);
       return;
     }
 
     let cancelled = false;
-    setAsset(null);
     setLoading(true);
-
     const run = async () => {
       try {
-        const detail = await getAssetById(assetId);
-        if (!cancelled) setAsset(detail);
+        const [assetDetail, locationDetail, financeDetail] = await Promise.all([
+          getAssetById(assetId),
+          getAssetLocation(assetId).catch(() => null),
+          getAssetFinance(assetId).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setAsset(assetDetail);
+        setLocation(locationDetail);
+        setFinance(financeDetail);
       } catch (error) {
         if (!cancelled) {
-          toast.error(mapAxiosErrorMessage(error));
+          toast.error(error instanceof Error ? error.message : "Failed to load asset detail");
           onClose();
         }
       } finally {
@@ -321,1370 +181,230 @@ export function AssetDetailDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open, assetId, onClose]);
+  }, [assetId, onClose, open]);
 
-  const loadReleases = useCallback(async () => {
-    if (!assetId) return;
+  const orgLabel = asset?.org_node_name || (asset?.org_node_id ? orgMap.get(asset.org_node_id)?.name : null) || "-";
+  const supplierLabel =
+    asset?.supplier_name || (asset?.supplier_id ? supplierMap.get(asset.supplier_id) : null) || "-";
+  const statusLabel = findLookupLabel(assetStatuses, asset?.asset_status);
+  const currencyLabel = findLookupLabel(currencies, asset?.asset_currency);
 
-    setReleasesLoading(true);
-    try {
-      const data = await getReleasesByAssetId(assetId);
-      setReleases(data);
-    } catch (error) {
-      const mapped = mapReleaseAxiosError(error);
-      toast.error(mapped.message);
-    } finally {
-      setReleasesLoading(false);
-    }
-  }, [assetId]);
+  // Related modules normalize both asset_uuid and business asset_id; UUID is preferred when available.
+  const referenceAssetId = asset?.asset_uuid || asset?.asset_id || assetId || "";
 
-  const loadFinance = useCallback(async () => {
-    if (!assetId) return;
-
-    setFinanceLoading(true);
-    try {
-      const data = await getAssetFinance(assetId);
-      setFinance(data);
-    } catch (error) {
-      const mapped = mapAxiosErrorMessage(error);
-      toast.error(mapped);
-    } finally {
-      setFinanceLoading(false);
-    }
-  }, [assetId]);
-
-  const loadLocation = useCallback(async () => {
-    if (!assetId) return;
-
-    setLocationLoading(true);
-    try {
-      const data = await getAssetLocation(assetId);
-      setLocation(data);
-    } catch (error) {
-      const mapped = mapAxiosErrorMessage(error);
-      toast.error(mapped);
-    } finally {
-      setLocationLoading(false);
-    }
-  }, [assetId]);
-
-  const loadDocuments = useCallback(async (options: { silent?: boolean } = {}) => {
-    if (!assetId) return;
-
-    if (!options.silent) {
-      setDocumentsLoading(true);
-    }
-    try {
-      const data = await getAssetDocuments(assetId);
-      setDocuments(data);
-    } catch (error) {
-      if (options.silent) {
-        console.error("Failed to refresh document vectorization status:", error);
-      } else {
-        const mapped = mapDocumentLinkAxiosError(error);
-        toast.error(mapped.message);
-      }
-    } finally {
-      if (!options.silent) {
-        setDocumentsLoading(false);
-      }
-    }
-  }, [assetId]);
-
-  const loadReferences = useCallback(async () => {
-    if (!assetId) return;
-
-    setReferencesLoading(true);
-    try {
-      const [releaseResult, evaluationResult, summaryResult, assetAuthoredResult, assetQualificationResult, assetLinkedResult] =
-        await Promise.allSettled([
-          getReleasesByAssetId(assetId),
-          getSupplierEvaluations({ asset_uuid: assetId }),
-          getAssetVectorizationSummary(assetId),
-          getAssetAuthoredDocuments(assetId),
-          getAssetQualificationDocuments(assetId),
-          getAssetDocuments(assetId),
-        ]);
-
-      const releaseList = releaseResult.status === "fulfilled" ? releaseResult.value : [];
-      const releaseDocumentResults = await Promise.allSettled(
-        releaseList.map(async (release) => {
-          const [authored, qualification, linked] = await Promise.allSettled([
-            getReleaseAuthoredDocuments(release.release_id),
-            getReleaseQualificationDocuments(release.release_id),
-            getReleaseDocuments(release.release_id),
-          ]);
-
-          return (
-            (authored.status === "fulfilled" ? authored.value.length : 0) +
-            (qualification.status === "fulfilled" ? qualification.value.length : 0) +
-            (linked.status === "fulfilled" ? linked.value.length : 0)
-          );
-        }),
-      );
-
-      const releaseDocumentCount = releaseDocumentResults.reduce(
-        (total, result) => total + (result.status === "fulfilled" ? result.value : 0),
-        0,
-      );
-      const assetDocumentCount =
-        (assetAuthoredResult.status === "fulfilled" ? assetAuthoredResult.value.length : 0) +
-        (assetQualificationResult.status === "fulfilled" ? assetQualificationResult.value.length : 0) +
-        (assetLinkedResult.status === "fulfilled" ? assetLinkedResult.value.length : 0);
-      const vectorSummary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
-      const tracked = vectorSummary?.tracked_document_count ?? 0;
-      const completed = vectorSummary?.completed_count ?? 0;
-      const failed = vectorSummary?.failed_count ?? 0;
-      const processing = (vectorSummary?.pending_or_queued_count ?? 0) + (vectorSummary?.processing_count ?? 0);
-
-      setReferenceSummary({
-        documents: assetDocumentCount + releaseDocumentCount,
-        releases: releaseList.length,
-        supplierEvaluations: evaluationResult.status === "fulfilled" ? evaluationResult.value.length : 0,
-        intelligenceTrackedDocuments: tracked,
-        intelligenceChunks: vectorSummary?.total_chunk_count ?? 0,
-        intelligenceStatus:
-          tracked === 0
-            ? "No tracked documents"
-            : `${completed}/${tracked} completed${processing ? `, ${processing} active` : ""}${failed ? `, ${failed} failed` : ""}`,
-      });
-    } catch (error) {
-      console.error("Failed to load asset references:", error);
-      toast.error("Failed to load asset references");
-      setReferenceSummary(emptyReferenceSummary);
-    } finally {
-      setReferencesLoading(false);
-    }
-  }, [assetId]);
-
-  useEffect(() => {
-    if (!open || !assetId) {
-      setReleases([]);
-      setReleasesLoading(false);
-      return;
-    }
-
-    if (activeTab !== "references") return;
-    void loadReleases();
-  }, [activeTab, assetId, loadReleases, open]);
-
-  useEffect(() => {
-    if (!open || !assetId) {
-      setFinance(null);
-      setFinanceLoading(false);
-      return;
-    }
-
-    if (activeTab !== "finance") return;
-    void loadFinance();
-  }, [activeTab, assetId, loadFinance, open]);
-
-  useEffect(() => {
-    if (!open || !assetId) {
-      setLocation(null);
-      setLocationLoading(false);
-      return;
-    }
-
-    if (activeTab !== "overview" && activeTab !== "location") return;
-    void loadLocation();
-  }, [activeTab, assetId, loadLocation, open]);
-
-  useEffect(() => {
-    if (!open || !assetId) {
-      setDocuments([]);
-      setDocumentsLoading(false);
-      return;
-    }
-
-    if (activeTab !== "references") return;
-    void loadReferences();
-  }, [activeTab, assetId, loadReferences, open]);
-
-  const hasActiveDocumentVectorization = useMemo(
-    () => documents.some(isDocumentVectorizationActive),
-    [documents],
-  );
-
-  useEffect(() => {
-    if (!open || !assetId || activeTab !== "references" || !hasActiveDocumentVectorization) return;
-
-    const intervalId = window.setInterval(() => {
-      void loadDocuments({ silent: true });
-    }, 3000);
-
-    return () => window.clearInterval(intervalId);
-  }, [activeTab, assetId, hasActiveDocumentVectorization, loadDocuments, open]);
-
-  const orgMap = useMemo(() => buildOrgMap(orgTree), [orgTree]);
-  const supplierMap = useMemo(
-    () => new Map<string, string>(suppliers.map((item) => [item.supplier_id, item.supplier_name])),
-    [suppliers],
-  );
-  const sortedReleases = useMemo(
-    () => [...releases].sort((left, right) => getReleaseSortValue(right) - getReleaseSortValue(left)),
-    [releases],
-  );
-  const latestRelease = sortedReleases[0] ?? null;
-  const assessmentRelease = useMemo(
-    () => sortedReleases.find((release) => release.release_id === assessmentReleaseId) ?? null,
-    [assessmentReleaseId, sortedReleases],
-  );
-  const assetDocumentContext: DocumentLinkContext = useMemo(
-    () => ({
-      type: "asset",
-      assetId,
-      assetName: asset?.asset_name ?? null,
-      assetCode: asset?.asset_id ?? null,
-      assetVersion: asset?.asset_version ?? null,
-    }),
-    [asset?.asset_id, asset?.asset_name, asset?.asset_version, assetId],
-  );
-  const assetAuthoredDocumentContext = useMemo(
-    () => ({
-      type: "asset" as const,
-      assetId,
-      assetName: asset?.asset_name ?? null,
-      assetCode: asset?.asset_id ?? null,
-      assetVersion: asset?.asset_version ?? null,
-    }),
-    [asset?.asset_id, asset?.asset_name, asset?.asset_version, assetId],
-  );
-  const assetQualificationDocumentContext = useMemo(
-    () => ({
-      type: "asset" as const,
-      assetId,
-      assetName: asset?.asset_name ?? null,
-      assetCode: asset?.asset_id ?? null,
-      assetVersion: asset?.asset_version ?? null,
-    }),
-    [asset?.asset_id, asset?.asset_name, asset?.asset_version, assetId],
-  );
-
-  const organization = asset?.org_node_name || (asset?.org_node_id ? orgMap.get(asset.org_node_id)?.name : undefined) || "-";
-  const supplier = asset?.supplier_name || (asset?.supplier_id ? supplierMap.get(asset.supplier_id) : undefined) || "-";
-  const tagList = asset?.tags ?? [];
-  const assetSpecGroups = useMemo(() => groupAssetSpecValues(asset?.asset_spec_values), [asset?.asset_spec_values]);
-  const locationForAsset = location?.asset_uuid === assetId ? location : null;
-  const financeSupplier =
-    finance?.supplier_name || (finance?.supplier_id ? supplierMap.get(finance.supplier_id) : undefined) || "-";
-  const releaseDisabledReason =
-    asset && !asset.can_create_release
-      ? `Release creation is unavailable because ${findLookupLabel(assetClasses, asset.asset_class)} is not configured for upgrade-managed releases.`
-      : null;
-  const assetReferenceKey = asset?.asset_id || assetId || "";
-  const buildReferenceUrl = (path: string) => `${path}?asset_id=${encodeURIComponent(assetReferenceKey)}`;
-
-  const handleDeleteReleaseClick = (release: ReleaseRecord) => {
-    setReleaseToDelete(release);
-    setDeleteReleaseDialogOpen(true);
-  };
-
-  const handleDeleteDocumentClick = (document: DocumentLinkRecord) => {
-    if (!canDeleteDocument) return;
-    setDocumentToDelete(document);
-    setDeleteDocumentDialogOpen(true);
-  };
-
-  const handleDeleteFinanceClick = () => {
-    setDeleteFinanceDialogOpen(true);
-  };
-
-  const handleDeleteLocationClick = () => {
-    setDeleteLocationDialogOpen(true);
-  };
-
-  const handleViewAssessment = (release: ReleaseRecord) => {
-    setAssessmentReleaseId(release.release_id);
-  };
-
-  const handleConfirmDeleteRelease = async () => {
-    if (!releaseToDelete) return;
-
-    setDeletingRelease(true);
-    try {
-      await deleteRelease(releaseToDelete.release_id);
-      toast.success("Release deleted successfully");
-      await loadReleases();
-    } catch (error) {
-      const mapped = mapReleaseAxiosError(error);
-      toast.error(mapped.message);
-    } finally {
-      setDeletingRelease(false);
-      setDeleteReleaseDialogOpen(false);
-      setReleaseToDelete(null);
-    }
-  };
-
-  const handleConfirmDeleteDocument = async () => {
-    if (!documentToDelete || !canDeleteDocument) return;
-
-    setDeletingDocument(true);
-    try {
-      await deleteDocumentLink(documentToDelete.document_link_id);
-      toast.success("Document link deleted successfully");
-      await loadDocuments();
-    } catch (error) {
-      const mapped = mapDocumentLinkAxiosError(error);
-      toast.error(mapped.message);
-    } finally {
-      setDeletingDocument(false);
-      setDeleteDocumentDialogOpen(false);
-      setDocumentToDelete(null);
-    }
-  };
-
-  const handleReprocessDocument = async (document: DocumentLinkRecord) => {
-    try {
-      await reprocessDocumentVectorization(document.document_link_id);
-      toast.success("Document vectorization queued");
-      await loadDocuments({ silent: true });
-    } catch (error) {
-      const mapped = mapDocumentLinkAxiosError(error);
-      toast.error(mapped.message);
-    }
-  };
-
-  const handleConfirmDeleteFinance = async () => {
-    if (!assetId) return;
-
-    setDeletingFinance(true);
-    try {
-      await deleteAssetFinance(assetId);
-      toast.success("Asset finance deleted successfully");
-      setFinance(null);
-      setDeleteFinanceDialogOpen(false);
-    } catch (error) {
-      toast.error(mapAxiosErrorMessage(error));
-    } finally {
-      setDeletingFinance(false);
-      setDeleteFinanceDialogOpen(false);
-    }
-  };
-
-  const handleConfirmDeleteLocation = async () => {
-    if (!assetId) return;
-
-    setDeletingLocation(true);
-    try {
-      await deleteAssetLocation(assetId);
-      toast.success("Asset location deleted successfully");
-      setLocation(null);
-      setDeleteLocationDialogOpen(false);
-    } catch (error) {
-      toast.error(mapAxiosErrorMessage(error));
-    } finally {
-      setDeletingLocation(false);
-      setDeleteLocationDialogOpen(false);
-    }
-  };
-
-  const handleRegenerateAssessment = async (release: ReleaseRecord) => {
-    try {
-      await regenerateImpactAssessment(release.release_id);
-      toast.success("Impact assessment regenerated successfully");
-      if (assessmentReleaseId === release.release_id) {
-        setAssessmentReloadToken((previous) => previous + 1);
-      }
-    } catch (error) {
-      const mapped = mapReleaseAxiosError(error);
-      toast.error(mapped.message);
-    }
-  };
-
-  const handleDownloadAssessment = async (release: ReleaseRecord) => {
-    try {
-      const fileName = await downloadImpactAssessment(release.release_id);
-      toast.success(fileName ? `Impact assessment downloaded: ${fileName}` : "Impact assessment downloaded");
-    } catch (error) {
-      const mapped = mapReleaseAxiosError(error);
-      toast.error(mapped.message);
-    }
-  };
+  const referenceCards: ReferenceCard[] = [
+    {
+      title: "Releases",
+      description: "Release planning, version changes, and impact assessment.",
+      action: "View Releases",
+      icon: <Workflow className="h-5 w-5" />,
+      permission: "ASSET_VIEW",
+      onClick: () => navigateToAssetReleases(referenceAssetId),
+    },
+    {
+      title: "Documents",
+      description: "Authored, qualification, and linked asset documents.",
+      action: "View Documents",
+      icon: <FileText className="h-5 w-5" />,
+      permission: "DOCUMENT_VIEW",
+      onClick: () => navigateToDocumentPortal(referenceAssetId),
+    },
+    {
+      title: "Supplier Evaluations",
+      description: "Supplier response and assessment workflows.",
+      action: "View Supplier Evaluations",
+      icon: <Building2 className="h-5 w-5" />,
+      anyOf: ["ASSET_VIEW", "SUPPLIER_VIEW"],
+      onClick: () => navigateToSupplierEvaluations(referenceAssetId, asset?.supplier_id ?? undefined),
+    },
+    {
+      title: "Periodic Review",
+      description: "Manual audit-trail review activity for this asset.",
+      action: "View Periodic Reviews",
+      icon: <RotateCw className="h-5 w-5" />,
+      anyOf: ["SCHEDULE_VIEW", "AUDIT_REVIEW_VIEW"],
+      onClick: () => navigateToPeriodicReview(referenceAssetId),
+    },
+    {
+      title: "Document Intelligence",
+      description: "Vectorization, extraction, and intelligence status.",
+      action: "View Intelligence",
+      icon: <FileJson className="h-5 w-5" />,
+      permission: "DOCUMENT_VIEW",
+      onClick: () => navigateToDocumentIntelligence(referenceAssetId),
+    },
+  ];
 
   return (
-    <>
-      <Drawer
-        open={open}
-        onClose={onClose}
-        title="Asset Master Detail"
-        width="w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] lg:w-[calc(100vw-15rem)]"
-      >
-        <div className="p-5">
-          {loading ? (
-            <p className="text-sm text-slate-600">Loading asset details...</p>
-          ) : !asset ? (
-            <p className="text-sm text-slate-600">No asset selected.</p>
-          ) : (
-            <Tabs
-              value={activeTab}
-              onValueChange={(value) => setActiveTab(value as AssetDetailTab)}
-              className="gap-4"
-            >
-              <TabsList className="h-auto flex-wrap justify-start bg-slate-100">
-                <TabsTrigger value="overview" className="px-4">
-                  Overview
-                </TabsTrigger>
-                <TabsTrigger value="location" className="px-4">
-                  Location
-                </TabsTrigger>
-                <TabsTrigger value="finance" className="px-4">
-                  Finance
-                </TabsTrigger>
-                <TabsTrigger value="references" className="px-4">
-                  References
-                </TabsTrigger>
+    <Drawer open={open} onClose={onClose} title="Asset Master Detail" width="w-[52rem] max-w-[96vw]">
+      <div className="space-y-5 px-5 py-4">
+        {loading ? (
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-600">
+            Loading asset detail...
+          </div>
+        ) : !asset ? (
+          <EmptyState title="No asset selected" description="Select an asset row to view master data details." />
+        ) : (
+          <>
+            <div className="rounded-md border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Asset Master</p>
+                  <h3 className="mt-1 text-xl font-semibold text-slate-900">{formatValue(asset.asset_name)}</h3>
+                  <p className="mt-1 text-sm text-slate-500">{formatValue(asset.asset_id)}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {asset.asset_status ? <StatusBadge status={statusKind(asset.asset_status)} title={statusLabel} /> : null}
+                  {asset.criticality_class ? (
+                    <Badge variant="outline" className={getCriticalityBadgeClass(asset.criticality_class)}>
+                      {findLookupLabel(criticalities, asset.criticality_class)}
+                    </Badge>
+                  ) : null}
+                </div>
+              </div>
+              {asset.short_description ? <p className="mt-3 text-sm text-slate-600">{asset.short_description}</p> : null}
+            </div>
+
+            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as AssetDetailTab)} className="gap-4">
+              <TabsList className="w-full justify-start rounded-md">
+                {detailTabs.map((tab) => (
+                  <TabsTrigger key={tab.key} value={tab.key} className="flex-none rounded-md px-3">
+                    {tab.label}
+                  </TabsTrigger>
+                ))}
               </TabsList>
 
               <TabsContent value="overview" className="space-y-5">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Asset ID</p>
-                    <p className="mt-2 text-lg font-semibold text-slate-900">{formatValue(asset.asset_id)}</p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Asset Class</p>
-                    <p className="mt-2 text-lg font-semibold text-slate-900">
-                      {findLookupLabel(assetClasses, asset.asset_class)}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {asset.can_create_release ? "Release-enabled" : "Release not enabled"}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Lifecycle Status</p>
-                    <div className="mt-2">
-                      <span
-                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${getAssetStatusBadgeClass(
-                          asset.asset_status,
-                        )}`}
-                      >
-                        {findLookupLabel(assetStatuses, asset.asset_status)}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Criticality {findLookupLabel(criticalities, asset.criticality_class)}
-                    </p>
-                  </div>
-                </div>
+                <Section title="Core Identity">
+                  <FieldGrid>
+                    <FieldItem label="Asset ID" value={formatValue(asset.asset_id)} />
+                    <FieldItem label="Asset Name" value={formatValue(asset.asset_name)} />
+                    <FieldItem label="Serial Number" value={formatValue(asset.serial_number)} />
+                    <FieldItem label="Legacy ID" value={formatValue(asset.legacy_id)} />
+                    <FieldItem label="Tag Number" value={formatValue(asset.tag_number)} />
+                    <FieldItem label="Version" value={formatValue(asset.asset_version)} />
+                  </FieldGrid>
+                </Section>
 
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Core Identity</h4>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <InfoField label="Asset Name" value={formatValue(asset.asset_name)} />
-                    <InfoField label="Short Description" value={formatValue(asset.short_description)} />
-                    <InfoField label="Organization" value={organization} />
-                    <InfoField label="Supplier" value={supplier} />
-                    <InfoField label="Asset Owner" value={formatValue(asset.asset_owner)} />
-                    <InfoField label="Record UUID" value={formatValue(asset.asset_uuid)} />
-                  </div>
-                </div>
+                <Section title="Classification">
+                  <FieldGrid>
+                    <FieldItem label="Asset Class" value={findLookupLabel(assetClasses, asset.asset_class)} />
+                    <FieldItem label="Category" value={findLookupLabel(assetCategories, asset.asset_category)} />
+                    <FieldItem label="Sub-category" value={findLookupLabel(assetSubCategories, asset.asset_sub_category)} />
+                    <FieldItem label="Asset Type" value={findLookupLabel(assetTypes, asset.asset_type)} />
+                    <FieldItem label="Criticality" value={findLookupLabel(criticalities, asset.criticality_class)} />
+                    <FieldItem label="Asset Nature" value={findLookupLabel(assetNatures, asset.asset_nature)} />
+                    <FieldItem label="Status" value={asset.asset_status ? <StatusBadge status={statusKind(asset.asset_status)} title={statusLabel} /> : "-"} />
+                    <FieldItem label="Owner" value={formatValue(asset.asset_owner)} />
+                    <FieldItem label="Supplier" value={supplierLabel} />
+                    <FieldItem label="Org Unit" value={orgLabel} />
+                  </FieldGrid>
+                </Section>
 
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <h4 className="text-sm font-semibold text-slate-900">Physical Location</h4>
-                    </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setActiveTab("location")}
-                    >
-                      {locationForAsset ? "Manage Location" : "Add Location"}
-                    </Button>
+                <Section title="Description">
+                  <div className="rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                    {formatValue(asset.asset_description)}
                   </div>
-
-                  {locationLoading && !locationForAsset ? (
-                    <div className="rounded-lg border border-slate-200 bg-white px-4 py-6 text-sm text-slate-600">
-                      Loading asset location...
-                    </div>
-                  ) : !locationForAsset ? (
-                    <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-8 text-center">
-                      <h4 className="text-sm font-semibold text-slate-900">No physical location recorded</h4>
-                      <p className="mt-2 text-sm text-slate-500">
-                        Add building, floor, and local reference details so teams can locate this asset precisely within the site.
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Site / Entity" value={organization} />
-                        <InfoField label="Building" value={formatValue(locationForAsset.building_reference)} />
-                        <InfoField label="Floor / Level" value={formatValue(locationForAsset.floor_reference)} />
-                        <InfoField label="Local Reference" value={formatValue(locationForAsset.local_reference)} />
-                      </div>
-
-                      {locationForAsset.remarks ? (
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Location Remarks</p>
-                          <p className="mt-2 text-sm text-slate-800">{locationForAsset.remarks}</p>
-                        </div>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Classification</h4>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <InfoField label="Asset Class" value={findLookupLabel(assetClasses, asset.asset_class)} />
-                    <InfoField label="Asset Category" value={findLookupLabel(assetCategories, asset.asset_category)} />
-                    <InfoField
-                      label="Asset Sub-category"
-                      value={findLookupLabel(assetSubCategories, asset.asset_sub_category)}
-                    />
-                    <InfoField label="Asset Type" value={findLookupLabel(assetTypes, asset.asset_type)} />
-                    <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Criticality</p>
-                      <span
-                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${getCriticalityBadgeClass(
-                          asset.criticality_class,
-                        )}`}
-                      >
-                        {findLookupLabel(criticalities, asset.criticality_class)}
-                      </span>
-                    </div>
-                    <InfoField label="Asset Nature" value={findLookupLabel(assetNatures, asset.asset_nature)} />
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Asset Specifications</h4>
-                  </div>
-                  {assetSpecGroups.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
-                      No asset specifications were stored for this asset.
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {assetSpecGroups.map(([grouping, items]) => (
-                        <div key={grouping} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
-                          <h5 className="text-sm font-semibold text-slate-900">{grouping}</h5>
-                          <div className="space-y-3">
-                            {items.map((item) => (
-                              <div key={item.asset_spec_id} className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 md:grid-cols-[1fr_1.2fr_1fr]">
-                                <InfoField label="Parameter Name" value={formatValue(item.parameter_name)} />
-                                <InfoField label="Description" value={formatValue(item.parameter_description)} />
-                                <InfoField label="Value" value={formatValue(item.parameter_value)} />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Tracking Identifiers</h4>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <InfoField label="Legacy ID" value={formatValue(asset.legacy_id)} />
-                    <InfoField label="Serial Number" value={formatValue(asset.serial_number)} />
-                    <InfoField label="Tag Number" value={formatValue(asset.tag_number)} />
-                    <InfoField label="QR / Barcode" value={formatValue(asset.qr_barcode)} />
-                    <InfoField label="RFID Tag" value={formatValue(asset.rfid_tag)} />
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Description And Tags</h4>
-                  </div>
-                  <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="text-sm text-slate-800">{formatValue(asset.asset_description)}</p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Tags</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {tagList.length > 0 ? (
-                        tagList.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700"
-                          >
-                            {tag}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-xs text-slate-400">No tags recorded</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-900">Commercial And Lifecycle</h4>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <InfoField label="Manufacturer" value={formatValue(asset.manufacturer)} />
-                    <InfoField label="Model" value={formatValue(asset.model)} />
-                    <InfoField label="Version" value={formatValue(asset.asset_version)} />
-                    <InfoField label="Asset Value" value={formatCurrencyValue(asset.asset_value, asset.asset_currency)} />
-                    <InfoField label="Purchase Date" value={formatDate(asset.asset_purchase_dt)} />
-                    <InfoField label="Commission Date" value={formatDate(asset.asset_commission_dt)} />
-                    <InfoField label="Purchase Reference" value={formatValue(asset.asset_purchase_ref)} />
-                    <InfoField
-                      label="Warranty"
-                      value={asset.warranty_period ? `${asset.warranty_period} months` : "-"}
-                    />
-                    <InfoField label="Release Reference URL" value={formatValue(asset.asset_release_url)} />
-                  </div>
-                </div>
-
-                <AssetLifecycleTimeline asset={asset} assetStatuses={assetStatuses} />
+                </Section>
               </TabsContent>
 
-              <TabsContent value="location" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Name</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset ID</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Site / Entity</p>
-                        <p className="text-sm font-medium text-slate-900">{organization}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Location Record</p>
-                        <p className="text-sm font-medium text-slate-900">{locationForAsset ? "Configured" : "Not yet added"}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Button type="button" size="sm" onClick={() => setLocationModalOpen(true)} disabled={!assetId}>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d={locationForAsset ? "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" : "M12 4v16m8-8H4"}
-                          />
-                        </svg>
-                        {locationForAsset ? "Edit Location" : "Add Location"}
-                      </Button>
-                      {locationForAsset ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={handleDeleteLocationClick}
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                        >
-                          Delete
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-
-                {locationLoading && !locationForAsset ? (
-                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-6 text-sm text-slate-600">
-                    Loading asset location details...
-                  </div>
-                ) : !locationForAsset ? (
-                  <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-8 text-center">
-                    <h4 className="text-sm font-semibold text-slate-900">No location record linked</h4>
-                    <p className="mt-2 text-sm text-slate-500">
-                      Add building, floor, and local reference details to show exactly where this asset sits inside its site.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Building</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">{formatValue(locationForAsset.building_reference)}</p>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Floor / Level</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">{formatValue(locationForAsset.floor_reference)}</p>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Local Reference</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">{formatValue(locationForAsset.local_reference)}</p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Placement Context</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Site / Entity" value={organization} />
-                        <InfoField label="Asset" value={formatValue(asset.asset_name)} />
-                        <InfoField label="Building Reference" value={formatValue(locationForAsset.building_reference)} />
-                        <InfoField label="Floor / Level" value={formatValue(locationForAsset.floor_reference)} />
-                        <InfoField label="Local Reference" value={formatValue(locationForAsset.local_reference)} />
-                        <InfoField
-                          label="Last Updated"
-                          value={formatDate(locationForAsset.modified_dt ?? locationForAsset.created_dt)}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Remarks</h4>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white p-3">
-                        <p className="text-sm text-slate-800">
-                          {locationForAsset.remarks?.trim() ? locationForAsset.remarks : "No location remarks recorded."}
-                        </p>
-                      </div>
-                    </div>
-                  </>
-                )}
+              <TabsContent value="location" className="space-y-5">
+                <Section title="Org And Placement">
+                  <FieldGrid>
+                    <FieldItem label="Org Unit" value={orgLabel} />
+                    <FieldItem label="Location Record" value={location ? "Configured" : "Not configured"} />
+                    <FieldItem label="Building Reference" value={formatValue(location?.building_reference)} />
+                    <FieldItem label="Floor / Level" value={formatValue(location?.floor_reference)} />
+                    <FieldItem label="Local Reference" value={formatValue(location?.local_reference)} />
+                    <FieldItem label="Location Remarks" value={formatValue(location?.remarks)} />
+                  </FieldGrid>
+                </Section>
+                {!location ? (
+                  <EmptyState
+                    title="No location record"
+                    description="Location fields can be added or updated from the Asset Master edit wizard."
+                    icon={<MapPin className="h-5 w-5" />}
+                  />
+                ) : null}
               </TabsContent>
 
-              <TabsContent value="finance" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Name</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset ID</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Organization</p>
-                        <p className="text-sm font-medium text-slate-900">{organization}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Finance Record</p>
-                        <p className="text-sm font-medium text-slate-900">{finance ? "Configured" : "Not yet added"}</p>
-                      </div>
-                    </div>
+              <TabsContent value="finance" className="space-y-5">
+                <Section title="Asset Purchase Summary">
+                  <FieldGrid>
+                    <FieldItem label="Purchase Date" value={formatDate(asset.asset_purchase_dt)} />
+                    <FieldItem label="Commission Date" value={formatDate(asset.asset_commission_dt)} />
+                    <FieldItem label="Purchase Reference" value={formatValue(asset.asset_purchase_ref)} />
+                    <FieldItem label="Warranty Period" value={asset.warranty_period ? `${asset.warranty_period} months` : "-"} />
+                    <FieldItem label="Asset Value" value={formatMoney(asset.asset_value, currencyLabel === "-" ? asset.asset_currency : currencyLabel)} />
+                    <FieldItem label="Release Reference URL" value={formatValue(asset.asset_release_url)} />
+                  </FieldGrid>
+                </Section>
 
-                    <div className="flex items-center gap-2">
-                      <Button type="button" size="sm" onClick={() => setFinanceModalOpen(true)} disabled={!assetId}>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d={finance ? "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" : "M12 4v16m8-8H4"}
-                          />
-                        </svg>
-                        {finance ? "Edit Finance" : "Add Finance"}
-                      </Button>
-                      {finance ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={handleDeleteFinanceClick}
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                        >
-                          Delete
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-
-                {financeLoading ? (
-                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-6 text-sm text-slate-600">
-                    Loading asset finance details...
-                  </div>
-                ) : !finance ? (
-                  <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-8 text-center">
-                    <h4 className="text-sm font-semibold text-slate-900">No finance record linked</h4>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Acquisition Cost</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">
-                          {formatCurrencyValue(finance.acquisition_cost, finance.currency_code)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Book Value</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">
-                          {formatCurrencyValue(finance.book_value, finance.currency_code)}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                        <p className="text-xs text-slate-500">Finance Supplier</p>
-                        <p className="mt-1 text-lg font-semibold text-slate-900">{financeSupplier}</p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Procurement / Source</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Acquisition Date" value={formatDate(finance.acquisition_dt)} />
-                        <InfoField label="Supplier" value={financeSupplier} />
-                        <InfoField label="Purchase Order No" value={formatValue(finance.purchase_order_no)} />
-                        <InfoField label="Invoice Reference" value={formatValue(finance.invoice_ref)} />
-                        <InfoField label="Make" value={formatValue(finance.make)} />
-                        <InfoField label="Model" value={formatValue(finance.model)} />
-                        <InfoField label="Manufacturer" value={formatValue(finance.manufacturer)} />
-                        <InfoField label="OEM Release URL" value={formatValue(finance.oem_release_url)} />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Capitalization / Cost</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Capitalization Date" value={formatDate(finance.capitalization_date)} />
-                        <InfoField label="Currency" value={findLookupLabel(currencies, finance.currency_code)} />
-                        <InfoField label="Acquisition Cost" value={formatCurrencyValue(finance.acquisition_cost, finance.currency_code)} />
-                        <InfoField label="Accumulated Depreciation" value={formatCurrencyValue(finance.accumulated_depreciation, finance.currency_code)} />
-                        <InfoField label="Book Value" value={formatCurrencyValue(finance.book_value, finance.currency_code)} />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Valuation / Insurance</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Replacement Value" value={formatCurrencyValue(finance.replacement_value, finance.currency_code)} />
-                        <InfoField label="Insured Value" value={formatCurrencyValue(finance.insured_value, finance.currency_code)} />
-                        <InfoField label="Salvage Value" value={formatCurrencyValue(finance.salvage_value, finance.currency_code)} />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Depreciation</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Depreciation Method" value={findLookupLabel(depreciationMethods, finance.depreciation_method)} />
-                        <InfoField label="Useful Life" value={`${finance.useful_life_years} years`} />
-                        <InfoField label="Depreciation Rate" value={formatPercentValue(finance.depreciation_rate_pct)} />
-                      </div>
-                    </div>
-
-                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-900">Accounting / Project Codes</h4>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <InfoField label="Cost Center" value={formatValue(finance.cost_center)} />
-                        <InfoField label="GL Account Capex" value={formatValue(finance.gl_account_capex)} />
-                        <InfoField label="Asset Class GL" value={findLookupLabel(assetClassGlOptions, finance.asset_class_gl)} />
-                        <InfoField label="WBS Element" value={formatValue(finance.wbs_element)} />
-                      </div>
-                    </div>
-                  </>
-                )}
+                <Section title="Finance Record">
+                  {finance ? (
+                    <FieldGrid>
+                      <FieldItem label="Acquisition Date" value={formatDate(finance.acquisition_dt)} />
+                      <FieldItem label="Supplier" value={finance.supplier_name || supplierMap.get(finance.supplier_id) || "-"} />
+                      <FieldItem label="Purchase Order" value={formatValue(finance.purchase_order_no)} />
+                      <FieldItem label="Invoice Reference" value={formatValue(finance.invoice_ref)} />
+                      <FieldItem label="Capitalization Date" value={formatDate(finance.capitalization_date)} />
+                      <FieldItem label="Acquisition Cost" value={formatMoney(finance.acquisition_cost, finance.currency_code)} />
+                      <FieldItem label="Book Value" value={formatMoney(finance.book_value, finance.currency_code)} />
+                      <FieldItem label="Replacement Value" value={formatMoney(finance.replacement_value, finance.currency_code)} />
+                      <FieldItem label="Insured Value" value={formatMoney(finance.insured_value, finance.currency_code)} />
+                      <FieldItem label="Salvage Value" value={formatMoney(finance.salvage_value, finance.currency_code)} />
+                      <FieldItem label="Depreciation Method" value={findLookupLabel(depreciationMethods, finance.depreciation_method)} />
+                      <FieldItem label="Useful Life" value={finance.useful_life_years ? `${finance.useful_life_years} years` : "-"} />
+                      <FieldItem label="Depreciation Rate" value={finance.depreciation_rate_pct === null || finance.depreciation_rate_pct === undefined ? "-" : `${finance.depreciation_rate_pct}%`} />
+                      <FieldItem label="Accumulated Depreciation" value={formatMoney(finance.accumulated_depreciation, finance.currency_code)} />
+                      <FieldItem label="Cost Center" value={formatValue(finance.cost_center)} />
+                      <FieldItem label="GL Account Capex" value={formatValue(finance.gl_account_capex)} />
+                      <FieldItem label="Asset Class GL" value={findLookupLabel(assetClassGlOptions, finance.asset_class_gl)} />
+                      <FieldItem label="WBS Element" value={formatValue(finance.wbs_element)} />
+                    </FieldGrid>
+                  ) : (
+                    <EmptyState
+                      title="No finance record"
+                      description="Finance fields can be added from the Asset Master edit wizard when needed."
+                      icon={<CircleDollarSign className="h-5 w-5" />}
+                    />
+                  )}
+                </Section>
               </TabsContent>
 
               <TabsContent value="references" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-                    <div>
-                      <p className="text-xs text-slate-500">Asset Name</p>
-                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">Asset ID</p>
-                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">Current Version</p>
-                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_version)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">Reference Key</p>
-                      <p className="text-sm font-medium text-slate-900">Asset ID</p>
-                    </div>
-                  </div>
-                </div>
-
-                {referencesLoading ? (
-                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
-                    Loading related references...
+                {referenceAssetId ? (
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {referenceCards.map((card) => (
+                      <div key={card.title} className="flex min-h-44 flex-col rounded-md border border-slate-200 bg-white p-4">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-700">
+                            {card.icon}
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-sm font-semibold text-slate-900">{card.title}</h4>
+                            <p className="mt-1 text-sm text-slate-500">{card.description}</p>
+                          </div>
+                        </div>
+                        <div className="mt-auto pt-4">
+                          <PermissionGuard permission={card.permission} anyOf={card.anyOf}>
+                            <Button type="button" variant="secondary" size="sm" onClick={card.onClick}>
+                              <ExternalLink className="h-4 w-4" />
+                              {card.action}
+                            </Button>
+                          </PermissionGuard>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">Referenced Documents</p>
-                          <p className="mt-1 text-xs text-slate-500">Authored, qualification, and linked document records.</p>
-                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.documents}</p>
-                        </div>
-                        <Button type="button" variant="outline" size="sm" asChild>
-                          <a href={buildReferenceUrl("/document-portal")}>Go to Module</a>
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">Related Releases</p>
-                          <p className="mt-1 text-xs text-slate-500">Release records managed outside Asset Master.</p>
-                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.releases}</p>
-                        </div>
-                        <Button type="button" variant="outline" size="sm" asChild>
-                          <a href={buildReferenceUrl("/asset-releases")}>Go to Module</a>
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">Supplier Evaluations</p>
-                          <p className="mt-1 text-xs text-slate-500">Supplier response and scoring workflows.</p>
-                          <p className="mt-4 text-2xl font-semibold text-blue-700">{referenceSummary.supplierEvaluations}</p>
-                        </div>
-                        <Button type="button" variant="outline" size="sm" asChild>
-                          <a href={buildReferenceUrl("/supplier-evaluations")}>Go to Module</a>
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">Document Intelligence</p>
-                          <p className="mt-1 text-xs text-slate-500">{referenceSummary.intelligenceStatus}</p>
-                          <p className="mt-4 text-2xl font-semibold text-blue-700">
-                            {referenceSummary.intelligenceTrackedDocuments}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">{referenceSummary.intelligenceChunks} chunks</p>
-                        </div>
-                        <Button type="button" variant="outline" size="sm" asChild>
-                          <a href={buildReferenceUrl("/document-intelligence")}>Go to Module</a>
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
+                  <EmptyState title="No references available" description="This asset needs a saved asset identifier before related workflow links can be opened." />
                 )}
               </TabsContent>
-
-              <TabsContent value="releases" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Name</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset ID</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Class</p>
-                        <p className="text-sm font-medium text-slate-900">
-                          {findLookupLabel(assetClasses, asset.asset_class)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Current Version</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_version)}</p>
-                      </div>
-                    </div>
-
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => setCreateReleaseOpen(true)}
-                      disabled={!assetId || !asset.can_create_release}
-                      title={releaseDisabledReason ?? "Create release"}
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                      </svg>
-                      Create Release
-                    </Button>
-                  </div>
-
-                  {releaseDisabledReason ? (
-                    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      {releaseDisabledReason}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                    <p className="text-xs text-slate-500">Total Releases</p>
-                    <p className="mt-1 text-lg font-semibold text-slate-900">{sortedReleases.length}</p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                    <p className="text-xs text-slate-500">Latest Version</p>
-                    <p className="mt-1 text-lg font-semibold text-slate-900">{latestRelease?.version || "-"}</p>
-                    {latestRelease?.created_dt ? (
-                      <p className="mt-1 text-xs text-slate-500">Created {formatDate(latestRelease.created_dt)}</p>
-                    ) : null}
-                  </div>
-                </div>
-
-                <AssetReleaseTable
-                  releases={sortedReleases}
-                  loading={releasesLoading}
-                  onView={handleViewAssessment}
-                  onRegenerateAssessment={handleRegenerateAssessment}
-                  onDownloadAssessment={handleDownloadAssessment}
-                  onEdit={(release) => setEditReleaseId(release.release_id)}
-                  onDelete={handleDeleteReleaseClick}
-                  onDocuments={(release) => setReleaseDocumentsTarget(release)}
-                />
-              </TabsContent>
-
-              <TabsContent value="supplier-evaluation" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div>
-                      <p className="text-xs text-slate-500">Asset Name</p>
-                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">Asset ID</p>
-                      <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">Workflow</p>
-                      <p className="text-sm font-medium text-slate-900">Supplier response and selection</p>
-                    </div>
-                  </div>
-                </div>
-
-                <SupplierEvaluationPanel
-                  enabled={open && activeTab === "supplier-evaluation"}
-                  assetId={assetId}
-                  assetName={asset?.asset_name ?? null}
-                  assetCode={asset?.asset_id ?? null}
-                  suppliers={suppliers}
-                  releases={sortedReleases}
-                  sourceSystemOptions={sourceSystemOptions}
-                />
-              </TabsContent>
-
-              <TabsContent value="document-hub" className="space-y-4">
-                <AssetDocumentHubPanel
-                  enabled={open && activeTab === "document-hub"}
-                  asset={asset}
-                  sourceSystemOptions={sourceSystemOptions}
-                />
-              </TabsContent>
-
-              <TabsContent value="rag-insights" className="space-y-4">
-                <AssetRagInsightsPanel
-                  enabled={open && activeTab === "rag-insights"}
-                  assetId={assetId}
-                  assetName={asset.asset_name}
-                  assetCode={asset.asset_id}
-                  assetVersion={asset.asset_version}
-                  sourceSystemOptions={sourceSystemOptions}
-                />
-              </TabsContent>
-
-              <TabsContent value="documents" className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Name</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_name)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset ID</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_id)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Asset Version</p>
-                        <p className="text-sm font-medium text-slate-900">{formatValue(asset.asset_version)}</p>
-                      </div>
-                    </div>
-
-                    <AuthoredDocumentPanel
-                      enabled={open && activeTab === "documents"}
-                      context={assetAuthoredDocumentContext}
-                      variant="dropdown"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">Linked Documents : {documents.length}</p>
-                    </div>
-
-                    <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        aria-expanded={linkedDocumentsOpen}
-                        onClick={() => setLinkedDocumentsOpen((previous) => !previous)}
-                        disabled={!assetId}
-                      >
-                        <svg
-                          className={`w-4 h-4 transition-transform ${linkedDocumentsOpen ? "rotate-180" : ""}`}
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={2}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                        </svg>
-                        {linkedDocumentsOpen ? "Hide Docs" : "View Docs"}
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-700">
-                          {documents.length}
-                        </span>
-                      </Button>
-
-                      {canCreateDocument ? <Button type="button" size="sm" onClick={() => setCreateDocumentOpen(true)} disabled={!assetId}>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                        </svg>
-                        Add Document
-                      </Button> : null}
-                    </div>
-                  </div>
-
-                  {linkedDocumentsOpen ? (
-                    <>
-                      <AssetDocumentTable
-                        documents={documents}
-                        loading={documentsLoading}
-                        onEdit={(document) => setEditDocumentId(document.document_link_id)}
-                        onDelete={handleDeleteDocumentClick}
-                        onReprocess={(document) => void handleReprocessDocument(document)}
-                        canUpdate={canUpdateDocument}
-                        canDelete={canDeleteDocument}
-                        sourceSystemOptions={sourceSystemOptions}
-                      />
-                    </>
-                  ) : null}
-                </div>
-
-                <QualificationDocumentPanel
-                  enabled={open && activeTab === "documents"}
-                  context={assetQualificationDocumentContext}
-                  suppliers={suppliers}
-                  releaseOptions={sortedReleases}
-                  sourceSystemOptions={sourceSystemOptions}
-                />
-              </TabsContent>
             </Tabs>
-          )}
-        </div>
-      </Drawer>
-
-      <AssetFinanceModal
-        open={open && financeModalOpen}
-        assetId={assetId}
-        assetName={asset?.asset_name}
-        assetCode={asset?.asset_id}
-        finance={finance}
-        suppliers={suppliers}
-        currencies={currencies}
-        depreciationMethods={depreciationMethods}
-        assetClassGlOptions={assetClassGlOptions}
-        onClose={() => setFinanceModalOpen(false)}
-        onSaved={async () => {
-          await loadFinance();
-          setFinanceModalOpen(false);
-        }}
-      />
-
-      <AssetLocationModal
-        open={open && locationModalOpen}
-        assetId={assetId}
-        assetName={asset?.asset_name}
-        assetCode={asset?.asset_id}
-        organization={organization}
-        location={locationForAsset}
-        onClose={() => setLocationModalOpen(false)}
-        onSaved={async () => {
-          await loadLocation();
-          setLocationModalOpen(false);
-        }}
-      />
-
-      <CreateReleaseModal
-        open={createReleaseOpen}
-        assetId={assetId}
-        assetName={asset?.asset_name}
-        onClose={() => setCreateReleaseOpen(false)}
-        onCreated={async () => {
-          await loadReleases();
-          setCreateReleaseOpen(false);
-        }}
-      />
-
-      <EditReleaseModal
-        open={Boolean(editReleaseId)}
-        releaseId={editReleaseId}
-        onClose={() => setEditReleaseId(null)}
-        onUpdated={async () => {
-          await loadReleases();
-          setEditReleaseId(null);
-        }}
-      />
-
-      {canCreateDocument ? <CreateDocumentLinkModal
-        open={open && createDocumentOpen}
-        context={assetDocumentContext}
-        sourceSystemOptions={sourceSystemOptions}
-        onClose={() => setCreateDocumentOpen(false)}
-        onCreated={async () => {
-          await loadDocuments();
-          setCreateDocumentOpen(false);
-        }}
-      /> : null}
-
-      {canUpdateDocument ? <EditDocumentLinkModal
-        open={open && Boolean(editDocumentId)}
-        documentLinkId={editDocumentId}
-        context={assetDocumentContext}
-        sourceSystemOptions={sourceSystemOptions}
-        onClose={() => setEditDocumentId(null)}
-        onUpdated={async () => {
-          await loadDocuments();
-          setEditDocumentId(null);
-        }}
-      /> : null}
-
-      <ReleaseDocumentsModal
-        open={open && Boolean(releaseDocumentsTarget)}
-        release={releaseDocumentsTarget}
-        assetName={asset?.asset_name}
-        assetCode={asset?.asset_id}
-        suppliers={suppliers}
-        sourceSystemOptions={sourceSystemOptions}
-        onClose={() => setReleaseDocumentsTarget(null)}
-      />
-
-      <ReleaseAssessmentModal
-        open={open && Boolean(assessmentRelease)}
-        release={assessmentRelease}
-        assetName={asset?.asset_name}
-        reloadToken={assessmentReloadToken}
-        onClose={() => setAssessmentReleaseId(null)}
-      />
-
-      <AlertDialog open={deleteReleaseDialogOpen} onOpenChange={setDeleteReleaseDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Release</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete release "{releaseToDelete?.version}"? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingRelease}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                void handleConfirmDeleteRelease();
-              }}
-              disabled={deletingRelease}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {deletingRelease ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={deleteFinanceDialogOpen} onOpenChange={setDeleteFinanceDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Asset Finance</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete the finance and valuation record for this asset? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingFinance}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                void handleConfirmDeleteFinance();
-              }}
-              disabled={deletingFinance}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {deletingFinance ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={deleteLocationDialogOpen} onOpenChange={setDeleteLocationDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Asset Location</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete the physical location record for this asset? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingLocation}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                void handleConfirmDeleteLocation();
-              }}
-              disabled={deletingLocation}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {deletingLocation ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={deleteDocumentDialogOpen} onOpenChange={setDeleteDocumentDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Document Link</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete document "{documentToDelete?.document_name}" from this asset?
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingDocument}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                void handleConfirmDeleteDocument();
-              }}
-              disabled={deletingDocument}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {deletingDocument ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+          </>
+        )}
+      </div>
+    </Drawer>
   );
 }
-
-
-
-

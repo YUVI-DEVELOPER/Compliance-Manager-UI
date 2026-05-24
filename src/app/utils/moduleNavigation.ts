@@ -30,12 +30,24 @@ export function navigateToAssetReleases(assetId: string | number): string {
   return pushModulePath(buildModulePath("/asset-releases", { asset_id: assetId }));
 }
 
-export function navigateToDocumentPortal(assetId: string | number, releaseId?: string | number): string {
-  return pushModulePath(buildModulePath("/document-portal", { asset_id: assetId, release_id: releaseId }));
+export function navigateToAsset(assetIdOrUuid: string | number): string {
+  return pushModulePath(buildModulePath("/asset-master", { asset_id: assetIdOrUuid }));
+}
+
+export function navigateToDocumentPortal(assetId: string | number, releaseId?: string | number, documentId?: string | number): string {
+  return pushModulePath(buildModulePath("/document-portal", { asset_id: assetId, release_id: releaseId, document_id: documentId }));
 }
 
 export function navigateToSupplierEvaluations(assetId?: string | number, supplierId?: string | number): string {
   return pushModulePath(buildModulePath("/supplier-evaluations", { asset_id: assetId, supplier_id: supplierId }));
+}
+
+export function navigateToSupplier(supplierId: string | number): string {
+  return pushModulePath(buildModulePath("/supplier", { supplier_id: supplierId }));
+}
+
+export function navigateToOrg(orgNodeId: string | number): string {
+  return pushModulePath(buildModulePath("/org-structure", { org_node_id: orgNodeId }));
 }
 
 export function navigateToPeriodicReview(assetId?: string | number): string {

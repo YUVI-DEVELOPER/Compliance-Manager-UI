@@ -83,6 +83,8 @@ const getTypeBadgeColor = (type: string, isDarkBg = false) => {
 const GlassNode = memo(({ data, selected }: NodeProps<GraphNodeData>) => {
   const colors = getNodeColors(data.type);
   const isSelected = selected;
+  const isHighlighted = Boolean(data.searchMatched);
+  const isDimmed = Boolean(data.dimmed);
   
   // Check if this is a GROUP node (for root organization)
   const isGroupNode = data.type === 'ORG' && data.metadata?.type === 'GROUP';
@@ -115,7 +117,9 @@ const GlassNode = memo(({ data, selected }: NodeProps<GraphNodeData>) => {
         className={`
           relative rounded-xl px-4 py-3 min-w-[180px] max-w-[220px]
           transition-all duration-200 ease-out cursor-pointer
-          ${isSelected ? 'ring-2 ring-offset-2' : 'hover:ring-1 hover:ring-offset-1'}
+          ${isDimmed ? 'opacity-40' : 'opacity-100'}
+          ${isHighlighted ? 'ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950' : ''}
+          ${isSelected && !isHighlighted ? 'ring-2 ring-offset-2 ring-offset-slate-950' : 'hover:ring-1 hover:ring-offset-1 hover:ring-offset-slate-950'}
         `}
         style={{
           // Dark background with slight transparency for glass effect

@@ -9,6 +9,11 @@ export interface UserRecord {
   phone?: string | null;
   is_active: boolean;
   is_locked: boolean;
+  failed_login_count?: number;
+  last_login_at?: string | null;
+  password_changed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
   roles: string[];
   permissions: string[];
 }
@@ -114,8 +119,17 @@ export async function createRole(payload: {
   description?: string | null;
   permission_codes?: string[];
   permission_group_codes?: string[];
+  is_active?: boolean;
 }): Promise<RoleRecord> {
   const response = await api.post<RoleRecord>("/roles", payload);
+  return response.data;
+}
+
+export async function updateRole(roleId: string, payload: {
+  role_name?: string;
+  description?: string | null;
+}): Promise<RoleRecord> {
+  const response = await api.patch<RoleRecord>(`/roles/${roleId}`, payload);
   return response.data;
 }
 

@@ -25,6 +25,7 @@ import {
   SupplierEvaluationResponseRecord,
   updateEvaluationRequirement,
 } from "../../../services/supplier-evaluation.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption } from "../../services/lookupValue.service";
 import {
   AlertDialog,
@@ -45,7 +46,6 @@ import { Textarea } from "../ui/textarea";
 import {
   canAddSuppliersToEvaluation,
   canSubmitSupplierResponse,
-  DEFAULT_SUPPLIER_EVALUATION_ACTOR,
   formatEvaluationDate,
   formatSupplierEvaluationStatus,
   formatSupplierRequirementFitStatus,
@@ -197,6 +197,8 @@ export function SupplierEvaluationWorkspaceModal({
   onClose,
   onChanged,
 }: SupplierEvaluationWorkspaceModalProps) {
+  const currentActor = useCurrentActor();
+  const actor = currentActor.auditName ?? currentActor.displayName;
   const [evaluation, setEvaluation] = useState<SupplierEvaluationRecord | null>(null);
   const [responses, setResponses] = useState<SupplierEvaluationResponseRecord[]>([]);
   const [requirements, setRequirements] = useState<EvaluationRequirementItemRecord[]>([]);
@@ -397,7 +399,7 @@ export function SupplierEvaluationWorkspaceModal({
     try {
       await runWorkspaceAction(async () => {
         await openSupplierEvaluation(evaluation.evaluation_id, {
-          action_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          action_by: actor,
         });
         toast.success("Evaluation opened for response");
       });
@@ -412,7 +414,7 @@ export function SupplierEvaluationWorkspaceModal({
     try {
       await runWorkspaceAction(async () => {
         await lockSupplierEvaluation(evaluation.evaluation_id, {
-          action_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          action_by: actor,
         });
         toast.success("Evaluation locked successfully");
       });
@@ -427,7 +429,7 @@ export function SupplierEvaluationWorkspaceModal({
     setAnalysisBusy(true);
     try {
       const result = await runSupplierEvaluationAnalysis(evaluation.evaluation_id, {
-        triggered_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+        triggered_by: actor,
       });
       setAnalysis(result);
       await loadWorkspace();
@@ -453,7 +455,7 @@ export function SupplierEvaluationWorkspaceModal({
       await runWorkspaceAction(async () => {
         const result = await addSupplierEvaluationResponses(evaluation.evaluation_id, {
           supplier_ids: selectedSupplierIds,
-          created_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          created_by: actor,
         });
         toast.success(
           result.created_count === 1
@@ -473,7 +475,7 @@ export function SupplierEvaluationWorkspaceModal({
     try {
       await runWorkspaceAction(async () => {
         await submitSupplierEvaluationResponse(responseId, {
-          action_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          action_by: actor,
         });
         toast.success("Supplier response submitted successfully");
       });
@@ -490,7 +492,7 @@ export function SupplierEvaluationWorkspaceModal({
     setRequirementBusy(true);
     try {
       const result = await seedSupplierEvaluationRequirements(evaluation.evaluation_id, {
-        created_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+        created_by: actor,
       });
       setRequirements(result.requirements);
       await loadWorkspace();
@@ -531,7 +533,7 @@ export function SupplierEvaluationWorkspaceModal({
     try {
       if (editingRequirement) {
         await updateEvaluationRequirement(editingRequirement.requirement_item_id, {
-          modified_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          modified_by: actor,
           requirement_key: requirementForm.requirement_key.trim() || null,
           requirement_section: requirementForm.requirement_section.trim() || null,
           requirement_text: requirementForm.requirement_text.trim(),
@@ -541,7 +543,7 @@ export function SupplierEvaluationWorkspaceModal({
         toast.success("Requirement baseline row updated");
       } else {
         await createEvaluationRequirement(evaluation.evaluation_id, {
-          created_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          created_by: actor,
           requirement_key: requirementForm.requirement_key.trim() || null,
           requirement_section: requirementForm.requirement_section.trim() || null,
           requirement_text: requirementForm.requirement_text.trim(),

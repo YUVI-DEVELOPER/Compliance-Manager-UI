@@ -10,6 +10,8 @@ import { DocumentUploadUrlField } from "./DocumentUploadUrlField";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Modal } from "../ui/Modal";
+import { RightPanel } from "../foundation";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption } from "../../services/lookupValue.service";
 import {
   analyzeDocumentLinkAutofill,
@@ -38,11 +40,11 @@ interface CreateDocumentLinkModalProps {
   open: boolean;
   context: DocumentLinkContext;
   sourceSystemOptions?: LookupOption[];
+  presentation?: "modal" | "panel";
   onClose: () => void;
   onCreated: () => Promise<void> | void;
 }
 
-const DEFAULT_CREATED_BY = "admin";
 const AI_AUTOFILL_FIELD_KEYS = new Set<keyof DocumentLinkFormState>([
   "document_type",
   "external_document_id",
@@ -58,9 +60,12 @@ export function CreateDocumentLinkModal({
   open,
   context,
   sourceSystemOptions = [],
+  presentation = "modal",
   onClose,
   onCreated,
 }: CreateDocumentLinkModalProps) {
+  const actor = useCurrentActor();
+  const actorName = actor.auditName ?? actor.id ?? actor.displayName;
   const [formData, setFormData] = useState<DocumentLinkFormState>(EMPTY_DOCUMENT_LINK_FORM);
   const [fieldErrors, setFieldErrors] = useState<DocumentLinkFieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
@@ -240,7 +245,7 @@ export function CreateDocumentLinkModal({
     setFieldErrors({});
 
     try {
-      const payload = buildCreateDocumentLinkPayload(nextFormData, DEFAULT_CREATED_BY);
+      const payload = buildCreateDocumentLinkPayload(nextFormData, actorName);
       if (context.type === "asset") {
         await createAssetDocument(contextId, payload);
       } else {
@@ -259,32 +264,27 @@ export function CreateDocumentLinkModal({
     }
   };
 
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Add Document"
-      description={
-        context.type === "asset"
-          ? "Link a validated document to the selected asset."
-          : "Link a validated document to the selected release."
-      }
-      size="lg"
-      footer={
-        <>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form="create-document-link-form"
-            disabled={submitting || !contextId || aiAutofill.status === "analyzing" || (aiAutofillEnabled && !showAiReviewFields)}
-          >
-            {submitting ? "Linking..." : "Link Document"}
-          </Button>
-        </>
-      }
-    >
+  const description =
+    context.type === "asset"
+      ? "Link a validated document to the selected asset."
+      : "Link a validated document to the selected release.";
+
+  const footer = (
+    <>
+      <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>
+        Cancel
+      </Button>
+      <Button
+        type="submit"
+        form="create-document-link-form"
+        disabled={submitting || !contextId || aiAutofill.status === "analyzing" || (aiAutofillEnabled && !showAiReviewFields)}
+      >
+        {submitting ? "Linking..." : "Link Document"}
+      </Button>
+    </>
+  );
+
+  const content = (
       <form id="create-document-link-form" className="space-y-5" onSubmit={(event) => void handleSubmit(event)}>
         {renderDocumentLinkFieldError(fieldErrors, "form")}
 
@@ -499,6 +499,26 @@ export function CreateDocumentLinkModal({
           </section>
         ) : null}
       </form>
+  );
+
+  if (presentation === "panel") {
+    return (
+      <RightPanel
+        open={open}
+        onClose={onClose}
+        title="Add Document"
+        description={description}
+        footer={footer}
+        widthClassName="max-w-2xl"
+      >
+        {content}
+      </RightPanel>
+    );
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add Document" description={description} size="lg" footer={footer}>
+      {content}
     </Modal>
   );
 }

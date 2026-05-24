@@ -2,8 +2,6 @@ import axios from "axios";
 
 import { apiBaseUrl } from "../../../services/api";
 
-export const DEFAULT_SUPPLIER_EVALUATION_ACTOR = "admin";
-
 export interface EvaluationUrsOption {
   authored_document_id: string;
   title: string;

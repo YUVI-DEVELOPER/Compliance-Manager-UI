@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption } from "../../services/lookupValue.service";
 import { SupplierRecord } from "../../../services/supplier.service";
 import {
@@ -36,9 +37,6 @@ interface AssetFinanceModalProps {
   onClose: () => void;
   onSaved: () => Promise<void> | void;
 }
-
-const DEFAULT_CREATED_BY = "admin";
-const DEFAULT_MODIFIED_BY = "admin";
 
 const FieldError = ({ error }: { error?: string }) => (
   error ? <p className="text-xs text-red-600">{error}</p> : null
@@ -152,6 +150,8 @@ export function AssetFinanceModal({
   onClose,
   onSaved,
 }: AssetFinanceModalProps) {
+  const currentActor = useCurrentActor();
+  const actorName = currentActor.auditName ?? currentActor.displayName;
   const [formData, setFormData] = useState<AssetFinanceFormState>(EMPTY_ASSET_FINANCE_FORM);
   const [initialFormData, setInitialFormData] = useState<AssetFinanceFormState>(EMPTY_ASSET_FINANCE_FORM);
   const [fieldErrors, setFieldErrors] = useState<AssetFinanceFieldErrors>({});
@@ -192,7 +192,7 @@ export function AssetFinanceModal({
     setFieldErrors({});
     try {
       if (isEditMode) {
-        const payload = buildUpdateAssetFinancePayload(initialFormData, formData, DEFAULT_MODIFIED_BY);
+        const payload = buildUpdateAssetFinancePayload(initialFormData, formData, actorName);
         if (Object.keys(payload).length === 1) {
           toast.message("No finance changes to save");
           setSubmitting(false);
@@ -201,7 +201,7 @@ export function AssetFinanceModal({
         await updateAssetFinance(assetId, payload);
         toast.success("Asset finance updated successfully");
       } else {
-        await createAssetFinance(assetId, buildCreateAssetFinancePayload(formData, DEFAULT_CREATED_BY));
+        await createAssetFinance(assetId, buildCreateAssetFinancePayload(formData, actorName));
         toast.success("Asset finance created successfully");
       }
 

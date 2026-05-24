@@ -1,4 +1,4 @@
-import { api, apiBaseUrl } from "./api";
+import { api } from "./api";
 
 interface ApiResponse<T> {
   success: boolean;
@@ -291,8 +291,13 @@ export const getAuthoredDocument = async (authoredDocumentId: string): Promise<A
   return mapAuthoredDocumentRecord(parseSingleResponse(response.data));
 };
 
-export const getAuthoredDocumentPdfPreviewUrl = (authoredDocumentId: string): string =>
-  `${apiBaseUrl}/authored-documents/${encodeURIComponent(authoredDocumentId)}/preview-pdf`;
+export const getAuthoredDocumentPdfPreviewBlob = async (authoredDocumentId: string): Promise<Blob> => {
+  const response = await api.get<Blob>(
+    `/authored-documents/${encodeURIComponent(authoredDocumentId)}/preview-pdf`,
+    { responseType: "blob" },
+  );
+  return response.data;
+};
 
 export const createAuthoredDocumentFromTemplate = async (
   payload: CreateAuthoredDocumentFromTemplatePayload,

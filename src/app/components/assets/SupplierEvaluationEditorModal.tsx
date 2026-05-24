@@ -9,12 +9,12 @@ import {
   SupplierEvaluationRecord,
   updateSupplierEvaluation,
 } from "../../../services/supplier-evaluation.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Modal } from "../ui/Modal";
 import {
   canEditEvaluation,
-  DEFAULT_SUPPLIER_EVALUATION_ACTOR,
   EvaluationUrsOption,
   formatEvaluationUrsLabel,
   formatSupplierEvaluationStatus,
@@ -90,6 +90,8 @@ export function SupplierEvaluationEditorModal({
   onClose,
   onSaved,
 }: SupplierEvaluationEditorModalProps) {
+  const currentActor = useCurrentActor();
+  const actor = currentActor.auditName ?? currentActor.displayName;
   const [evaluationName, setEvaluationName] = useState("");
   const [selectedUrsId, setSelectedUrsId] = useState("");
   const [selectedSupplierIds, setSelectedSupplierIds] = useState<string[]>([]);
@@ -194,7 +196,7 @@ export function SupplierEvaluationEditorModal({
     try {
       if (evaluation) {
         await updateSupplierEvaluation(evaluation.evaluation_id, {
-          modified_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          modified_by: actor,
           evaluation_name: normalizedName,
           ...(canEditUrsSelection ? { urs_document_id: selectedUrsId } : {}),
         });
@@ -205,7 +207,7 @@ export function SupplierEvaluationEditorModal({
           asset_uuid: assetId,
           urs_document_id: selectedUrsId,
           supplier_ids: selectedSupplierIds,
-          created_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+          created_by: actor,
         });
         toast.success("Supplier evaluation created successfully");
       }

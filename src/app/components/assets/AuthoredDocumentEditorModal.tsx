@@ -10,7 +10,7 @@ import {
   createAuthoredDocumentAiDraft,
   createAuthoredDocumentFromTemplate,
   getAuthoredDocument,
-  getAuthoredDocumentPdfPreviewUrl,
+  getAuthoredDocumentPdfPreviewBlob,
   getAuthoredDocumentHistory,
   getDocumentTemplates,
   publishAuthoredDocumentToVeeva,
@@ -24,6 +24,7 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { DocumentUploadUrlField } from "./DocumentUploadUrlField";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { Input } from "../ui/input";
 import { Modal } from "../ui/Modal";
 import { Textarea } from "../ui/textarea";
@@ -77,11 +78,16 @@ interface AuthoredDocumentEditorModalProps {
   authoredDocumentId?: string | null;
   onClose: () => void;
   onSaved: () => Promise<void> | void;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canSubmit?: boolean;
+  canReview?: boolean;
+  canPublish?: boolean;
+  canRetryPublish?: boolean;
+  canComment?: boolean;
+  canAiAssist?: boolean;
+  canPreview?: boolean;
 }
-
-const DEFAULT_CREATED_BY = "admin";
-const DEFAULT_MODIFIED_BY = "admin";
-const DEFAULT_WORKFLOW_USER = "admin";
 
 const formatValue = (value?: string | null): string => {
   if (!value || !value.trim()) return "-";
@@ -215,7 +221,18 @@ export function AuthoredDocumentEditorModal({
   authoredDocumentId,
   onClose,
   onSaved,
+  canCreate = true,
+  canEdit = true,
+  canSubmit: canSubmitPermission = true,
+  canReview: canReviewPermission = true,
+  canPublish = true,
+  canRetryPublish = true,
+  canComment = true,
+  canAiAssist = true,
+  canPreview = true,
 }: AuthoredDocumentEditorModalProps) {
+  const actor = useCurrentActor();
+  const actorName = actor.auditName ?? actor.id ?? actor.displayName;
   const [templates, setTemplates] = useState<DocumentTemplateRecord[]>([]);
   const [document, setDocument] = useState<AuthoredDocumentRecord | null>(null);
   const [history, setHistory] = useState<AuthoredDocumentReviewActionRecord[]>([]);
@@ -232,6 +249,9 @@ export function AuthoredDocumentEditorModal({
   const [submitting, setSubmitting] = useState(false);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [sourceEditorOpen, setSourceEditorOpen] = useState(false);
+  const [pdfPreviewObjectUrl, setPdfPreviewObjectUrl] = useState("");
+  const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
+  const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
 
   const isEditingExistingDocument = Boolean(authoredDocumentId);
   const activeTemplate = useMemo(
@@ -240,11 +260,13 @@ export function AuthoredDocumentEditorModal({
   );
   const isEditorStage = Boolean(document) || isEditingExistingDocument;
   const documentStatus = document?.status ?? null;
-  const canEditContent = canEditAuthoredDocument(documentStatus);
-  const canSubmit = canSubmitAuthoredDocument(documentStatus);
-  const canReview = canReviewAuthoredDocument(documentStatus);
-  const canPublishToVeeva = canPublishAuthoredDocumentToVeeva(document);
-  const canRetryPublish = canRetryAuthoredDocumentPublish(document);
+  const canEditContent = canEdit && canEditAuthoredDocument(documentStatus);
+  const canSubmit = canSubmitPermission && canSubmitAuthoredDocument(documentStatus);
+  const canReview = canReviewPermission && canReviewAuthoredDocument(documentStatus);
+  const canPublishToVeeva = canPublish && canPublishAuthoredDocumentToVeeva(document);
+  const canRetryPublishToVeeva = canRetryPublish && canRetryAuthoredDocumentPublish(document);
+  const canUseAiAssist = canAiAssist && canEditContent;
+  const canAddComment = canComment && Boolean(document);
   const isCreateAIMode = createForm.generation_mode === AUTHORED_DOCUMENT_GENERATION_MODE_AI_ASSISTED;
   const hasRequestedAiAssist = hasRequestedAuthoredDocumentAIAssist(document);
   const generationLabel = formatAuthoredDocumentGenerationMode(
@@ -255,10 +277,9 @@ export function AuthoredDocumentEditorModal({
   const generationFallbackReason = formatAuthoredDocumentAIFallbackReason(document?.generation_fallback_reason);
   const publishStatusLabel = formatAuthoredDocumentPublishStatus(document?.publish_status);
   const externalDocumentLink = getAuthoredDocumentExternalLink(document);
-  const pdfPreviewUrl = useMemo(() => {
+  const pdfPreviewCacheKey = useMemo(() => {
     if (!document?.authored_document_id) return "";
-    const cacheKey = encodeURIComponent(document.modified_dt || document.created_dt || "");
-    return `${getAuthoredDocumentPdfPreviewUrl(document.authored_document_id)}?v=${cacheKey}`;
+    return [document.authored_document_id, document.modified_dt || document.created_dt || ""].join(":");
   }, [document?.authored_document_id, document?.created_dt, document?.modified_dt]);
 
   const applyDocumentState = useCallback(
@@ -377,7 +398,50 @@ export function AuthoredDocumentEditorModal({
     setSubmitting(false);
     setActiveAction(null);
     setSourceEditorOpen(false);
+    setPdfPreviewObjectUrl("");
+    setPdfPreviewLoading(false);
+    setPdfPreviewError(null);
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !canPreview || !document?.authored_document_id) {
+      setPdfPreviewObjectUrl("");
+      setPdfPreviewLoading(false);
+      setPdfPreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl = "";
+    setPdfPreviewObjectUrl("");
+    setPdfPreviewLoading(true);
+    setPdfPreviewError(null);
+
+    void getAuthoredDocumentPdfPreviewBlob(document.authored_document_id)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPdfPreviewObjectUrl(objectUrl);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const mapped = mapAuthoredDocumentAxiosError(error);
+        setPdfPreviewError(mapped.message || "Unable to load PDF preview.");
+      })
+      .finally(() => {
+        if (!cancelled) setPdfPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [canPreview, document?.authored_document_id, open, pdfPreviewCacheKey]);
+
+  const openPdfPreview = () => {
+    if (!pdfPreviewObjectUrl) return;
+    window.open(pdfPreviewObjectUrl, "_blank", "noopener,noreferrer");
+  };
 
   const updateCreateField = <K extends keyof typeof EMPTY_CREATE_AUTHORED_DOCUMENT_FORM>(
     key: K,
@@ -411,7 +475,7 @@ export function AuthoredDocumentEditorModal({
       comment_text?: string;
       reviewer_name?: string;
     } = {
-      action_by: DEFAULT_WORKFLOW_USER,
+      action_by: actorName,
     };
 
     const trimmedComment = workflowComment.trim();
@@ -436,6 +500,10 @@ export function AuthoredDocumentEditorModal({
     successMessage?: string | null;
   }): Promise<{ updatedDocument: AuthoredDocumentRecord; changed: boolean } | null> => {
     if (!document) return null;
+    if (!canEditContent) {
+      setFieldErrors({ form: "You do not have permission to edit this document." });
+      return null;
+    }
 
     const validationErrors = validateEditAuthoredDocumentForm(editForm);
     if (Object.keys(validationErrors).length > 0) {
@@ -443,7 +511,7 @@ export function AuthoredDocumentEditorModal({
       return null;
     }
 
-    const payload = buildUpdateAuthoredDocumentPayload(initialEditForm, editForm, DEFAULT_MODIFIED_BY);
+    const payload = buildUpdateAuthoredDocumentPayload(initialEditForm, editForm, actorName);
     const hasChanges = Object.keys(payload).length > 1;
 
     if (!hasChanges) {
@@ -462,6 +530,14 @@ export function AuthoredDocumentEditorModal({
   const handleCreateDraft = async (event: FormEvent) => {
     event.preventDefault();
     if (submitting || !context) return;
+    if (!canCreate) {
+      setFieldErrors({ form: "You do not have permission to create authored documents." });
+      return;
+    }
+    if (isCreateAIMode && !canAiAssist) {
+      setFieldErrors({ generation_mode: "You do not have permission to use AI draft generation." });
+      return;
+    }
 
     const validationErrors = validateCreateAuthoredDocumentForm(createForm);
     if (Object.keys(validationErrors).length > 0) {
@@ -474,8 +550,8 @@ export function AuthoredDocumentEditorModal({
     setFieldErrors({});
     try {
       const created = isCreateAIMode
-        ? await createAuthoredDocumentAiDraft(buildCreateAuthoredDocumentAiPayload(createForm, context, DEFAULT_CREATED_BY))
-        : await createAuthoredDocumentFromTemplate(buildCreateAuthoredDocumentPayload(createForm, context, DEFAULT_CREATED_BY));
+        ? await createAuthoredDocumentAiDraft(buildCreateAuthoredDocumentAiPayload(createForm, context, actorName))
+        : await createAuthoredDocumentFromTemplate(buildCreateAuthoredDocumentPayload(createForm, context, actorName));
 
       applyDocumentState(created);
       setHistory([]);
@@ -502,6 +578,10 @@ export function AuthoredDocumentEditorModal({
     operation: typeof AUTHORED_DOCUMENT_AI_OPERATION_REGENERATE | typeof AUTHORED_DOCUMENT_AI_OPERATION_IMPROVE,
   ) => {
     if (!document || submitting) return;
+    if (!canUseAiAssist) {
+      setFieldErrors({ form: "You do not have permission to use AI draft assistance." });
+      return;
+    }
 
     const validationErrors = validateEditAuthoredDocumentForm(editForm);
     if (Object.keys(validationErrors).length > 0) {
@@ -520,7 +600,7 @@ export function AuthoredDocumentEditorModal({
     try {
       const updated = await regenerateAuthoredDocumentAiContent(
         document.authored_document_id,
-        buildRegenerateAuthoredDocumentAiPayload(editForm, aiAssistForm, DEFAULT_MODIFIED_BY, operation),
+        buildRegenerateAuthoredDocumentAiPayload(editForm, aiAssistForm, actorName, operation),
       );
       applyDocumentState(updated, { preserveReviewerInput: true });
       toast.success(
@@ -541,6 +621,7 @@ export function AuthoredDocumentEditorModal({
 
   const handleSaveDraft = async () => {
     if (!document || submitting) return;
+    if (!canEditContent) return;
 
     setSubmitting(true);
     setActiveAction("save");
@@ -569,6 +650,7 @@ export function AuthoredDocumentEditorModal({
 
   const handleSubmitForReview = async () => {
     if (!document || submitting) return;
+    if (!canSubmit) return;
 
     setSubmitting(true);
     setActiveAction("submit");
@@ -596,13 +678,14 @@ export function AuthoredDocumentEditorModal({
 
   const handleApprove = async () => {
     if (!document || submitting) return;
+    if (!canReview) return;
 
     setSubmitting(true);
     setActiveAction("approve");
     setFieldErrors({});
     try {
       const updated = await approveAuthoredDocument(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
         comment_text: workflowComment.trim() || null,
       });
       await syncWorkflowDocument(updated, "Document approved successfully");
@@ -618,13 +701,14 @@ export function AuthoredDocumentEditorModal({
 
   const handlePublishToVeeva = async () => {
     if (!document || submitting) return;
+    if (!canPublishToVeeva) return;
 
     setSubmitting(true);
     setActiveAction("publish");
     setFieldErrors({});
     try {
       const updated = await publishAuthoredDocumentToVeeva(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
       });
       applyDocumentState(updated, { preserveReviewerInput: true });
       toast.success("Document published to Veeva successfully");
@@ -647,13 +731,14 @@ export function AuthoredDocumentEditorModal({
 
   const handleRetryPublish = async () => {
     if (!document || submitting) return;
+    if (!canRetryPublishToVeeva) return;
 
     setSubmitting(true);
     setActiveAction("retry-publish");
     setFieldErrors({});
     try {
       const updated = await retryAuthoredDocumentPublish(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
       });
       applyDocumentState(updated, { preserveReviewerInput: true });
       toast.success("Veeva publish retry succeeded");
@@ -676,6 +761,7 @@ export function AuthoredDocumentEditorModal({
 
   const handleRequestChanges = async () => {
     if (!document || submitting) return;
+    if (!canReview) return;
     if (!workflowComment.trim()) {
       setFieldErrors({ comment_text: "A review comment is required to request changes" });
       return;
@@ -686,7 +772,7 @@ export function AuthoredDocumentEditorModal({
     setFieldErrors({});
     try {
       const updated = await requestAuthoredDocumentChanges(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
         comment_text: workflowComment.trim(),
         reviewer_name: reviewerName.trim() || null,
       });
@@ -703,6 +789,7 @@ export function AuthoredDocumentEditorModal({
 
   const handleReject = async () => {
     if (!document || submitting) return;
+    if (!canReview) return;
     if (!workflowComment.trim()) {
       setFieldErrors({ comment_text: "A review comment is required to reject this document" });
       return;
@@ -713,7 +800,7 @@ export function AuthoredDocumentEditorModal({
     setFieldErrors({});
     try {
       const updated = await rejectAuthoredDocument(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
         comment_text: workflowComment.trim(),
         reviewer_name: reviewerName.trim() || null,
       });
@@ -730,6 +817,7 @@ export function AuthoredDocumentEditorModal({
 
   const handleAddComment = async () => {
     if (!document || submitting) return;
+    if (!canAddComment) return;
     if (!workflowComment.trim()) {
       setFieldErrors({ comment_text: "Comment is required" });
       return;
@@ -740,7 +828,7 @@ export function AuthoredDocumentEditorModal({
     setFieldErrors({});
     try {
       await commentOnAuthoredDocument(document.authored_document_id, {
-        action_by: DEFAULT_WORKFLOW_USER,
+        action_by: actorName,
         comment_text: workflowComment.trim(),
       });
       setWorkflowComment("");
@@ -802,7 +890,7 @@ export function AuthoredDocumentEditorModal({
             <Button
               type="submit"
               form="create-authored-document-form"
-              disabled={templatesLoading || submitting || !context || templates.length === 0}
+              disabled={templatesLoading || submitting || !context || templates.length === 0 || !canCreate}
             >
               {submitting && activeAction === "create"
                 ? isCreateAIMode
@@ -852,14 +940,16 @@ export function AuthoredDocumentEditorModal({
               >
                 Template Prefill
               </Button>
-              <Button
-                type="button"
-                variant={createForm.generation_mode === AUTHORED_DOCUMENT_GENERATION_MODE_AI_ASSISTED ? "default" : "outline"}
-                onClick={() => updateCreateField("generation_mode", AUTHORED_DOCUMENT_GENERATION_MODE_AI_ASSISTED)}
-                disabled={submitting}
-              >
-                AI-Assisted Draft
-              </Button>
+              {canAiAssist ? (
+                <Button
+                  type="button"
+                  variant={createForm.generation_mode === AUTHORED_DOCUMENT_GENERATION_MODE_AI_ASSISTED ? "default" : "outline"}
+                  onClick={() => updateCreateField("generation_mode", AUTHORED_DOCUMENT_GENERATION_MODE_AI_ASSISTED)}
+                  disabled={submitting}
+                >
+                  AI-Assisted Draft
+                </Button>
+              ) : null}
             </div>
             {renderAuthoredDocumentFieldError(fieldErrors, "generation_mode")}
           </div>
@@ -1090,13 +1180,13 @@ export function AuthoredDocumentEditorModal({
                   </Button>
                 ) : null}
 
-                {canRetryPublish ? (
+                {canRetryPublishToVeeva ? (
                   <Button type="button" variant="outline" onClick={() => void handleRetryPublish()} disabled={submitting}>
                     {submitting && activeAction === "retry-publish" ? "Retrying..." : "Retry Publish"}
                   </Button>
                 ) : null}
 
-                {externalDocumentLink ? (
+                {canPreview && externalDocumentLink ? (
                   <Button type="button" variant="outline" asChild>
                     <a href={externalDocumentLink} target="_blank" rel="noopener noreferrer">
                       Open in Veeva
@@ -1191,7 +1281,7 @@ export function AuthoredDocumentEditorModal({
                 </div>
               </div>
 
-              {canEditContent ? (
+              {canUseAiAssist ? (
                 <div className="rounded-xl border border-slate-200 bg-white px-4 py-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
@@ -1251,11 +1341,15 @@ export function AuthoredDocumentEditorModal({
                     <p className="text-sm font-semibold text-slate-900">Document Preview</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {pdfPreviewUrl ? (
-                      <Button type="button" variant="outline" size="sm" asChild>
-                        <a href={pdfPreviewUrl} target="_blank" rel="noopener noreferrer">
-                          Open PDF
-                        </a>
+                    {canPreview && document ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={openPdfPreview}
+                        disabled={!pdfPreviewObjectUrl || pdfPreviewLoading}
+                      >
+                        {pdfPreviewLoading ? "Loading PDF..." : "Open PDF"}
                       </Button>
                     ) : null}
                     <Button
@@ -1270,10 +1364,18 @@ export function AuthoredDocumentEditorModal({
                 </div>
 
                 <div className="mt-4 h-[38rem] overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
-                  {pdfPreviewUrl ? (
+                  {pdfPreviewLoading ? (
+                    <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                      Loading PDF preview...
+                    </div>
+                  ) : pdfPreviewError ? (
+                    <div className="flex h-full items-center justify-center px-6 text-center text-sm text-red-600">
+                      {pdfPreviewError}
+                    </div>
+                  ) : canPreview && pdfPreviewObjectUrl ? (
                     <iframe
-                      key={pdfPreviewUrl}
-                      src={pdfPreviewUrl}
+                      key={pdfPreviewCacheKey}
+                      src={pdfPreviewObjectUrl}
                       title="Authored URS PDF preview"
                       className="h-full w-full bg-white"
                     />
@@ -1305,7 +1407,7 @@ export function AuthoredDocumentEditorModal({
                   <div>
                     <p className="text-sm font-semibold text-slate-900">Review Comments</p>
                   </div>
-                  <Button type="button" variant="outline" onClick={() => void handleAddComment()} disabled={submitting}>
+                  <Button type="button" variant="outline" onClick={() => void handleAddComment()} disabled={submitting || !canAddComment}>
                     {submitting && activeAction === "comment" ? "Adding..." : "Add Comment"}
                   </Button>
                 </div>

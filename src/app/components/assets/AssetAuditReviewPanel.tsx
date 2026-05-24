@@ -61,6 +61,7 @@ import {
   submitAuditReviewReport,
   updateAuditReviewSchedule,
 } from "../../../services/audit-review.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { useAuth } from "../../auth/useAuth";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -1784,8 +1785,9 @@ export function AssetAuditReviewPanel({
   assetCode,
   assetOwner,
 }: AssetAuditReviewPanelProps) {
-  const { user, hasPermission, hasAnyPermission } = useAuth();
-  const currentActor = user?.email || user?.full_name || assetOwner || "system";
+  const { hasPermission, hasAnyPermission } = useAuth();
+  const actor = useCurrentActor();
+  const currentActor = actor.auditName ?? assetOwner ?? actor.displayName;
   const canViewAuditReview = hasPermission("AUDIT_REVIEW_VIEW");
   const canCreateReview = hasPermission("AUDIT_REVIEW_CREATE");
   const canExtractReview = hasPermission("AUDIT_REVIEW_EXTRACT");

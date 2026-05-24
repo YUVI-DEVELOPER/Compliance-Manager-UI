@@ -12,6 +12,7 @@ import {
   submitSupplierEvaluationResponse,
   updateSupplierEvaluationResponse,
 } from "../../../services/supplier-evaluation.service";
+import { useCurrentActor } from "../../auth/useCurrentActor";
 import { LookupOption } from "../../services/lookupValue.service";
 import {
   AlertDialog,
@@ -34,7 +35,6 @@ import { OMS_SOURCE_SYSTEM_FALLBACK_OPTIONS } from "./documentLinkForm.shared";
 import {
   canEditSupplierResponse,
   canSubmitSupplierResponse,
-  DEFAULT_SUPPLIER_EVALUATION_ACTOR,
   formatEvaluationDate,
   formatSupplierRequirementFitStatus,
   formatSupplierResponseDocumentType,
@@ -121,6 +121,8 @@ export function SupplierResponseModal({
   onClose,
   onSaved,
 }: SupplierResponseModalProps) {
+  const currentActor = useCurrentActor();
+  const actor = currentActor.auditName ?? currentActor.displayName;
   const availableSourceSystemOptions = useMemo(
     () => (sourceSystemOptions.length > 0 ? sourceSystemOptions : OMS_SOURCE_SYSTEM_FALLBACK_OPTIONS),
     [sourceSystemOptions],
@@ -282,7 +284,7 @@ export function SupplierResponseModal({
   const persistResponseHeader = async () => {
     if (!responseId || !responseDirty) return;
     const updated = await updateSupplierEvaluationResponse(responseId, {
-      modified_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+      modified_by: actor,
       quotation_reference: responseForm.quotation_reference.trim() || null,
       notes: responseForm.notes.trim() || null,
     });
@@ -306,7 +308,7 @@ export function SupplierResponseModal({
     }
 
     const updatedRows = await bulkSaveSupplierRequirementResponses(responseId, {
-      modified_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+      modified_by: actor,
       items: changedRows,
     });
     setRequirementRows(updatedRows);
@@ -368,7 +370,7 @@ export function SupplierResponseModal({
       }
 
       const submitted = await submitSupplierEvaluationResponse(responseId, {
-        action_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+        action_by: actor,
       });
       setDetail(submitted);
       setResponseForm({
@@ -432,7 +434,7 @@ export function SupplierResponseModal({
         access_url: documentForm.access_url.trim(),
         source_reference: documentForm.source_reference.trim() || null,
         notes: documentForm.notes.trim() || null,
-        created_by: DEFAULT_SUPPLIER_EVALUATION_ACTOR,
+        created_by: actor,
       });
       await loadResponse();
       await onSaved();

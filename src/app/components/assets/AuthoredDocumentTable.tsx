@@ -1,7 +1,8 @@
 import React from "react";
+import { Eye, Trash2 } from "lucide-react";
 
 import { AuthoredDocumentRecord } from "../../../services/authored-document.service";
-import { Badge } from "../ui/badge";
+import { Badge, StatusBadge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Table,
@@ -22,11 +23,20 @@ import {
   getAuthoredDocumentStatusBadgeClass,
 } from "./authoredDocumentForm.shared";
 
+const getAuthoredStatusKind = (status?: string | null): "active" | "inactive" | "pending" | "error" => {
+  if (status === "APPROVED") return "active";
+  if (status === "REJECTED") return "error";
+  if (status === "IN_REVIEW" || status === "CHANGES_REQUESTED" || status === "READY_FOR_REVIEW") return "pending";
+  return "inactive";
+};
+
 interface AuthoredDocumentTableProps {
   documents: AuthoredDocumentRecord[];
   loading: boolean;
   onOpen: (document: AuthoredDocumentRecord) => void;
   onDelete: (document: AuthoredDocumentRecord) => void;
+  canOpenRecord?: boolean;
+  canDelete?: boolean;
   emptyMessage?: string;
 }
 
@@ -35,6 +45,8 @@ export function AuthoredDocumentTable({
   loading,
   onOpen,
   onDelete,
+  canOpenRecord = true,
+  canDelete: canDeleteDocuments = true,
   emptyMessage = "No authored documents created yet. Start with a URS draft.",
 }: AuthoredDocumentTableProps) {
   return (
@@ -71,7 +83,7 @@ export function AuthoredDocumentTable({
               const updatedAt = document.modified_dt || document.created_dt;
               const reviewerName = document.reviewer_name?.trim() || "-";
               const approverName = document.approver_name?.trim() || "-";
-              const canDelete = canDeleteAuthoredDocument(document.status);
+              const canDelete = canDeleteDocuments && canDeleteAuthoredDocument(document.status);
               const generationLabel = formatAuthoredDocumentGenerationMode(
                 document.generation_mode,
                 document.generation_requested_mode,
@@ -95,12 +107,12 @@ export function AuthoredDocumentTable({
                     </Badge>
                   </TableCell>
                   <TableCell className="align-top">
-                    <Badge
-                      variant="outline"
+                    <StatusBadge
+                      status={getAuthoredStatusKind(document.status)}
                       className={getAuthoredDocumentStatusBadgeClass(document.status)}
                     >
                       {formatAuthoredDocumentStatus(document.status)}
-                    </Badge>
+                    </StatusBadge>
                   </TableCell>
                   <TableCell className="align-top whitespace-normal">
                     <Badge
@@ -133,17 +145,16 @@ export function AuthoredDocumentTable({
                   </TableCell>
                   <TableCell className="align-top text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onOpen(document)}
-                        title="Open Draft"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                        </svg>
-                      </Button>
+                      {canOpenRecord ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onOpen(document)}
+                          title="Open Draft"
+                        >
+                          <Eye className="size-4" />
+                        </Button>
+                      ) : null}
                       {canDelete ? (
                         <Button
                           variant="ghost"
@@ -152,9 +163,7 @@ export function AuthoredDocumentTable({
                           title="Delete Draft"
                           className="text-red-600 hover:text-red-700 hover:bg-red-50"
                         >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
+                          <Trash2 className="size-4" />
                         </Button>
                       ) : null}
                     </div>
