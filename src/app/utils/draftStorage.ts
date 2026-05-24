@@ -22,13 +22,15 @@ export function clearDraft(key: string): void {
 }
 
 export function isShallowDirtyTrimmed(
-  current: Record<string, string>,
-  baseline: Record<string, string>,
+  current: Record<string, unknown>,
+  baseline: Record<string, unknown>,
 ): boolean {
   const keys = Object.keys(current);
   for (const key of keys) {
-    const currentValue = (current[key] ?? "").trim();
-    const baselineValue = (baseline[key] ?? "").trim();
+    const currentRaw = current[key];
+    const baselineRaw = baseline[key];
+    const currentValue = typeof currentRaw === "string" ? currentRaw.trim() : JSON.stringify(currentRaw ?? null);
+    const baselineValue = typeof baselineRaw === "string" ? baselineRaw.trim() : JSON.stringify(baselineRaw ?? null);
     if (currentValue !== baselineValue) return true;
   }
   return false;

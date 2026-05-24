@@ -6,6 +6,14 @@ interface ApiResponse<T> {
   data: T;
 }
 
+export interface AssetSpecValueRecord {
+  asset_spec_id: string;
+  parameter_grouping: string;
+  parameter_name: string;
+  parameter_description?: string | null;
+  parameter_value: string;
+}
+
 export interface AssetRecord {
   asset_uuid: string;
   asset_id: string;
@@ -40,6 +48,7 @@ export interface AssetRecord {
   asset_currency?: string | null;
   asset_status?: string | null;
   asset_release_url?: string | null;
+  asset_spec_values?: AssetSpecValueRecord[] | null;
   created_by?: string | null;
   created_dt?: string | null;
   modified_by?: string | null;
@@ -110,6 +119,7 @@ export type CreateAssetPayload = {
   criticality_class: string;
   asset_nature: string;
   created_by: string;
+  asset_spec_values?: AssetSpecValueRecord[] | null;
   asset_type?: string | null;
   asset_status?: string | null;
   supplier_id?: string | null;
@@ -140,6 +150,7 @@ interface AssetApiRecord extends Partial<AssetRecord> {
   asset_version?: string | null;
   version?: string | null;
   tags?: string[] | string | null;
+  asset_spec_values?: Array<Partial<AssetSpecValueRecord>> | null;
 }
 
 interface AssetInventoryReportApiRow extends Partial<AssetInventoryReportRow> {
@@ -171,6 +182,27 @@ const normalizeTags = (value: AssetApiRecord["tags"]): string[] | null => {
     return items.length > 0 ? items : null;
   }
   return null;
+};
+
+const normalizeAssetSpecValues = (
+  value: AssetApiRecord["asset_spec_values"],
+): AssetSpecValueRecord[] | null => {
+  if (!Array.isArray(value)) return null;
+
+  const items = value
+    .map((item) => ({
+      asset_spec_id: String(item.asset_spec_id ?? "").trim(),
+      parameter_grouping: String(item.parameter_grouping ?? "").trim(),
+      parameter_name: String(item.parameter_name ?? "").trim(),
+      parameter_description:
+        item.parameter_description === undefined || item.parameter_description === null
+          ? null
+          : String(item.parameter_description),
+      parameter_value: String(item.parameter_value ?? "").trim(),
+    }))
+    .filter((item) => item.asset_spec_id && item.parameter_grouping && item.parameter_name);
+
+  return items.length > 0 ? items : null;
 };
 
 const mapAssetRecord = (record: AssetApiRecord): AssetRecord => ({
@@ -207,6 +239,7 @@ const mapAssetRecord = (record: AssetApiRecord): AssetRecord => ({
   asset_currency: record.asset_currency ?? null,
   asset_status: record.asset_status ?? null,
   asset_release_url: record.asset_release_url ?? null,
+  asset_spec_values: normalizeAssetSpecValues(record.asset_spec_values),
   created_by: record.created_by ?? null,
   created_dt: record.created_dt ?? null,
   modified_by: record.modified_by ?? null,
