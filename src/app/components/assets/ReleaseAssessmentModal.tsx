@@ -5,7 +5,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Modal } from "../ui/Modal";
 import {
-  getImpactAssessment,
+  getReleaseImpactReport,
   ReleaseImpactAssessmentRecord,
   ReleaseRecord,
 } from "../../../services/release.service";
@@ -81,7 +81,7 @@ export function ReleaseAssessmentModal({
 
     const run = async () => {
       try {
-        const data = await getImpactAssessment(releaseId);
+        const data = await getReleaseImpactReport(releaseId);
         if (cancelled) return;
         setAssessment(data);
       } catch (error) {

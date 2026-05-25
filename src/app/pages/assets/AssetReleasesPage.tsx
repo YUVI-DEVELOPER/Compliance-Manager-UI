@@ -12,6 +12,7 @@ import {
   deleteRelease,
   downloadImpactAssessment,
   getImpactAssessment,
+  getReleaseImpactReport,
   getReleaseById,
   getReleasesByAssetId,
   regenerateImpactAssessment,
@@ -37,13 +38,21 @@ import {
   DOCUMENTATION_MODE_MANUAL,
   DOCUMENTATION_MODE_ONLINE_FETCH,
   EMPTY_RELEASE_FORM,
+  ENVIRONMENT_OPTIONS,
+  EXPECTED_IMPACT_OPTIONS,
   formatDocumentationMode,
+  formatReleaseEnum,
   formatReleaseDateTime,
+  formatReleaseStatus,
   getAssessmentDiffSummary,
   getDocumentationModeBadgeClass,
-  getImpactLevelBadgeClass,
+  getPackageStatusBadgeClass,
+  getReleaseStatusBadgeClass,
   mapReleaseAxiosError,
   releaseToForm,
+  RELEASE_STATUS_IMPACT_ASSESSMENT_PENDING,
+  RELEASE_STATUS_VALIDATION_SCOPE_DEFINED,
+  RELEASE_TYPE_OPTIONS,
   renderReleaseFieldError,
   ReleaseFieldErrors,
   ReleaseFormState,
@@ -71,6 +80,8 @@ import {
   getQualificationStatusBadgeClass,
   getQualificationTypeBadgeClass,
 } from "../../components/assets/qualificationDocumentForm.shared";
+import { ImpactAssessmentStep } from "../../components/assets/ImpactAssessmentStep";
+import { DocumentChecklistStep } from "./components/DocumentChecklistStep";
 import { LookupOption } from "../../services/lookupValue.service";
 
 interface ReleaseRow {
@@ -79,9 +90,25 @@ interface ReleaseRow {
 }
 
 type AssessmentAvailability = "unknown" | "available" | "missing" | "error";
-type WorkflowStepKey = "details" | "assessment" | "documentation" | "decision";
+type WorkflowStepKey =
+  | "details"
+  | "assessment"
+  | "documentChecklist"
+  | "testExecution"
+  | "deviations"
+  | "traceability"
+  | "validationSummary"
+  | "approval";
 type PanelMode = "create" | "detail";
-type DerivedWorkflowStatus = "DRAFT" | "ASSESSMENT_PENDING" | "ASSESSMENT_DONE" | "DOCUMENTATION_AVAILABLE" | "RELEASED";
+type DerivedWorkflowStatus =
+  | "DRAFT"
+  | "ASSESSMENT_PENDING"
+  | "ASSESSMENT_DONE"
+  | "DOCUMENTS_PENDING"
+  | "TESTING_PENDING"
+  | "VALIDATION_SUMMARY_PENDING"
+  | "DOCUMENTATION_AVAILABLE"
+  | "RELEASED";
 
 interface WorkflowStatusMeta {
   code: DerivedWorkflowStatus;
@@ -97,15 +124,22 @@ interface WorkflowDocuments {
 
 const WORKFLOW_STEPS: Array<{ key: WorkflowStepKey; label: string; description: string }> = [
   { key: "details", label: "Release Details", description: "Version, dates, and documentation source" },
-  { key: "assessment", label: "Impact Assessment", description: "Generate, review, and download impact report" },
-  { key: "documentation", label: "Documentation", description: "Release documents and portal navigation" },
-  { key: "decision", label: "Release Decision", description: "Completion readiness and final transition" },
+  { key: "assessment", label: "Impact Assessment", description: "Questionnaire, risk score, and validation scope" },
+  { key: "documentChecklist", label: "Document Checklist", description: "Required documents and waivers" },
+  { key: "testExecution", label: "Test Execution", description: "IQ / OQ / PQ placeholder" },
+  { key: "deviations", label: "Deviations", description: "Deviation handling placeholder" },
+  { key: "traceability", label: "Traceability", description: "RTM placeholder" },
+  { key: "validationSummary", label: "Validation Summary", description: "Summary report placeholder" },
+  { key: "approval", label: "Approval", description: "Final QA approval placeholder" },
 ];
 
 const STATUS_FILTERS: Array<{ value: DerivedWorkflowStatus; label: string }> = [
   { value: "DRAFT", label: "Draft" },
   { value: "ASSESSMENT_PENDING", label: "Assessment Pending" },
   { value: "ASSESSMENT_DONE", label: "Assessment Done" },
+  { value: "DOCUMENTS_PENDING", label: "Documents Pending" },
+  { value: "TESTING_PENDING", label: "Testing Pending" },
+  { value: "VALIDATION_SUMMARY_PENDING", label: "Validation Summary Pending" },
   { value: "DOCUMENTATION_AVAILABLE", label: "Documentation Available" },
   { value: "RELEASED", label: "Released" },
 ];
@@ -178,6 +212,43 @@ const deriveWorkflowStatus = (
   if (!release) return { code: "DRAFT", label: "Draft", badge: "pending" };
 
   const persistedStatus = realWorkflowStatus(release);
+  const packageStatus = release.validation_package?.package_status;
+  const impactStatus = release.validation_package?.impact_assessment_status;
+  const checklistStatus = release.validation_package?.document_checklist_status;
+  if (persistedStatus === "TESTING_PENDING" || packageStatus === "TESTING_PENDING") {
+    return { code: "TESTING_PENDING", label: "Testing Pending", badge: "pending" };
+  }
+  if (persistedStatus === "VALIDATION_SUMMARY_PENDING" || packageStatus === "VALIDATION_SUMMARY_PENDING") {
+    return { code: "VALIDATION_SUMMARY_PENDING", label: "Validation Summary Pending", badge: "pending" };
+  }
+  if (
+    persistedStatus === "DOCUMENTS_PENDING" ||
+    packageStatus === "DOCUMENTS_PENDING" ||
+    checklistStatus === "GENERATED" ||
+    checklistStatus === "IN_PROGRESS" ||
+    checklistStatus === "STALE"
+  ) {
+    return { code: "DOCUMENTS_PENDING", label: "Documents Pending", badge: checklistStatus === "STALE" ? "error" : "pending" };
+  }
+  const validationScopeDefined =
+    persistedStatus === RELEASE_STATUS_VALIDATION_SCOPE_DEFINED ||
+    (impactStatus === "COMPLETED" && packageStatus === "VALIDATION_SCOPE_DEFINED");
+  if (validationScopeDefined) {
+    return { code: "ASSESSMENT_DONE", label: "Validation Scope Defined", badge: "active" };
+  }
+  if (persistedStatus === RELEASE_STATUS_IMPACT_ASSESSMENT_PENDING) {
+    return { code: "ASSESSMENT_PENDING", label: formatReleaseStatus(persistedStatus), badge: "pending" };
+  }
+  if (impactStatus === "PENDING" || impactStatus === "DRAFT" || impactStatus === "IN_PROGRESS" || impactStatus === "REOPENED") {
+    return { code: "ASSESSMENT_PENDING", label: formatReleaseEnum(impactStatus), badge: "pending" };
+  }
+  if (persistedStatus && persistedStatus !== "RELEASED") {
+    return {
+      code: "ASSESSMENT_PENDING",
+      label: formatReleaseStatus(persistedStatus),
+      badge: persistedStatus.includes("REJECT") || persistedStatus.includes("FAIL") ? "error" : "pending",
+    };
+  }
   if (persistedStatus === "RELEASED") return { code: "RELEASED", label: "Released", badge: "active" };
 
   if (hasReleaseDocumentation(release, documents)) {
@@ -187,13 +258,6 @@ const deriveWorkflowStatus = (
     return { code: "ASSESSMENT_DONE", label: "Assessment Done", badge: "active" };
   }
   return { code: "ASSESSMENT_PENDING", label: "Assessment Pending", badge: "pending" };
-};
-
-const assessmentLabel = (availability: AssessmentAvailability): string => {
-  if (availability === "available") return "Available";
-  if (availability === "missing") return "Pending";
-  if (availability === "error") return "Unavailable";
-  return "Checking";
 };
 
 const WorkflowStatusBadge = ({ status }: { status: WorkflowStatusMeta }) => (
@@ -229,82 +293,210 @@ function ReleaseFormFields({
   onChange: <K extends keyof ReleaseFormState>(key: K, value: ReleaseFormState[K]) => void;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {renderReleaseFieldError(fieldErrors, "form")}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-900">Release Details</h4>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="space-y-1">
+            <Input
+              label="Release Name"
+              value={formData.release_name}
+              onChange={(event) => onChange("release_name", event.target.value)}
+              disabled={disabled}
+              required
+            />
+            {renderReleaseFieldError(fieldErrors, "release_name")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Previous Version"
+              value={formData.previous_version}
+              onChange={(event) => onChange("previous_version", event.target.value)}
+              disabled={disabled}
+              required
+            />
+            {renderReleaseFieldError(fieldErrors, "previous_version")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="New Version"
+              value={formData.version}
+              onChange={(event) => onChange("version", event.target.value)}
+              disabled={disabled}
+              required
+            />
+            {renderReleaseFieldError(fieldErrors, "version")}
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Release Type</label>
+            <select
+              className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+              value={formData.release_type}
+              onChange={(event) => onChange("release_type", event.target.value)}
+              disabled={disabled}
+              required
+            >
+              <option value="">Select release type</option>
+              {RELEASE_TYPE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {formatReleaseEnum(option)}
+                </option>
+              ))}
+            </select>
+            {renderReleaseFieldError(fieldErrors, "release_type")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Planned Implementation Date"
+              type="date"
+              value={formData.planned_implementation_date}
+              onChange={(event) => onChange("planned_implementation_date", event.target.value)}
+              disabled={disabled}
+              required
+            />
+            {renderReleaseFieldError(fieldErrors, "planned_implementation_date")}
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Environment</label>
+            <select
+              className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+              value={formData.environment}
+              onChange={(event) => onChange("environment", event.target.value)}
+              disabled={disabled}
+              required
+            >
+              <option value="">Select environment</option>
+              {ENVIRONMENT_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {formatReleaseEnum(option)}
+                </option>
+              ))}
+            </select>
+            {renderReleaseFieldError(fieldErrors, "environment")}
+          </div>
+          <div className="space-y-1 md:col-span-2">
+            <Input
+              label="Vendor"
+              value={formData.vendor_name}
+              onChange={(event) => onChange("vendor_name", event.target.value)}
+              disabled={disabled}
+            />
+            {renderReleaseFieldError(fieldErrors, "vendor_name")}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-900">Release Documentation</h4>
         <div className="space-y-1">
-          <Input
-            label="Version"
-            value={formData.version}
-            onChange={(event) => onChange("version", event.target.value)}
+          <label className="text-sm font-medium text-slate-700">Documentation Mode</label>
+          <select
+            className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+            value={formData.documentation_mode}
+            onChange={(event) => onChange("documentation_mode", event.target.value)}
+            disabled={disabled}
+          >
+            <option value={DOCUMENTATION_MODE_MANUAL}>{formatDocumentationMode(DOCUMENTATION_MODE_MANUAL)}</option>
+            <option value={DOCUMENTATION_MODE_ONLINE_FETCH}>{formatDocumentationMode(DOCUMENTATION_MODE_ONLINE_FETCH)}</option>
+          </select>
+          {renderReleaseFieldError(fieldErrors, "documentation_mode")}
+        </div>
+
+        {formData.documentation_mode === DOCUMENTATION_MODE_MANUAL ? (
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Documentation Text</label>
+            <Textarea
+              rows={7}
+              value={formData.documentation_text}
+              onChange={(event) => onChange("documentation_text", event.target.value)}
+              disabled={disabled}
+            />
+            {renderReleaseFieldError(fieldErrors, "documentation_text")}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <Input
+              label="Documentation Source URL"
+              type="url"
+              value={formData.documentation_source_url}
+              onChange={(event) => onChange("documentation_source_url", event.target.value)}
+              placeholder="https://example.com/release-notes"
+              disabled={disabled}
+            />
+            {renderReleaseFieldError(fieldErrors, "documentation_source_url")}
+          </div>
+        )}
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">System Configuration Report</label>
+          <Textarea
+            rows={5}
+            value={formData.system_config_report}
+            onChange={(event) => onChange("system_config_report", event.target.value)}
+            disabled={disabled}
+          />
+          {renderReleaseFieldError(fieldErrors, "system_config_report")}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-900">Business Justification</h4>
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Release Description</label>
+          <Textarea
+            rows={4}
+            value={formData.release_description}
+            onChange={(event) => onChange("release_description", event.target.value)}
             disabled={disabled}
             required
           />
-          {renderReleaseFieldError(fieldErrors, "version")}
+          {renderReleaseFieldError(fieldErrors, "release_description")}
         </div>
         <div className="space-y-1">
-          <Input
-            label="Release / Effective Date"
-            type="date"
-            value={formData.end_dt}
-            onChange={(event) => onChange("end_dt", event.target.value)}
-            disabled={disabled}
-          />
-          {renderReleaseFieldError(fieldErrors, "end_dt")}
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-sm font-medium text-slate-700">Documentation Mode</label>
-        <select
-          className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
-          value={formData.documentation_mode}
-          onChange={(event) => onChange("documentation_mode", event.target.value)}
-          disabled={disabled}
-        >
-          <option value={DOCUMENTATION_MODE_MANUAL}>{formatDocumentationMode(DOCUMENTATION_MODE_MANUAL)}</option>
-          <option value={DOCUMENTATION_MODE_ONLINE_FETCH}>{formatDocumentationMode(DOCUMENTATION_MODE_ONLINE_FETCH)}</option>
-        </select>
-        {renderReleaseFieldError(fieldErrors, "documentation_mode")}
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-sm font-medium text-slate-700">System Configuration Report</label>
-        <Textarea
-          rows={5}
-          value={formData.system_config_report}
-          onChange={(event) => onChange("system_config_report", event.target.value)}
-          placeholder="Add system configuration details"
-          disabled={disabled}
-        />
-        {renderReleaseFieldError(fieldErrors, "system_config_report")}
-      </div>
-
-      {formData.documentation_mode === DOCUMENTATION_MODE_MANUAL ? (
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Documentation Text</label>
+          <label className="text-sm font-medium text-slate-700">Business Reason</label>
           <Textarea
-            rows={7}
-            value={formData.documentation_text}
-            onChange={(event) => onChange("documentation_text", event.target.value)}
-            placeholder="Paste or enter release documentation used for impact assessment"
+            rows={4}
+            value={formData.business_reason}
+            onChange={(event) => onChange("business_reason", event.target.value)}
             disabled={disabled}
+            required
           />
-          {renderReleaseFieldError(fieldErrors, "documentation_text")}
+          {renderReleaseFieldError(fieldErrors, "business_reason")}
         </div>
-      ) : (
         <div className="space-y-1">
           <Input
-            label="Documentation Source URL"
-            type="url"
-            value={formData.documentation_source_url}
-            onChange={(event) => onChange("documentation_source_url", event.target.value)}
-            placeholder="https://example.com/release-notes"
+            label="Change Control No."
+            value={formData.change_control_no}
+            onChange={(event) => onChange("change_control_no", event.target.value)}
             disabled={disabled}
           />
-          {renderReleaseFieldError(fieldErrors, "documentation_source_url")}
+          {renderReleaseFieldError(fieldErrors, "change_control_no")}
         </div>
-      )}
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-900">Initial Compliance Classification</h4>
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Expected Validated Functionality Impact</label>
+          <select
+            className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+            value={formData.expected_validated_functionality_impact}
+            onChange={(event) => onChange("expected_validated_functionality_impact", event.target.value)}
+            disabled={disabled}
+            required
+          >
+            <option value="">Select impact</option>
+            {EXPECTED_IMPACT_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {formatReleaseEnum(option)}
+              </option>
+            ))}
+          </select>
+          {renderReleaseFieldError(fieldErrors, "expected_validated_functionality_impact")}
+        </div>
+      </section>
     </div>
   );
 }
@@ -357,8 +549,54 @@ function ReleaseWorkflowPanel({
   const selectedAsset = useMemo(() => findAssetByToken(assets, selectedAssetId), [assets, selectedAssetId]);
   const currentStatus = deriveWorkflowStatus(release, assessmentState, documents);
   const documentCount = documents.authored.length + documents.qualification.length + documents.linked.length;
+  const hasValidationPackage = Boolean(release?.validation_package);
+  const validationPackage = release?.validation_package;
+  const impactAssessmentStatus = validationPackage?.impact_assessment_status;
+  const validationScope = validationPackage?.validation_scope;
+  const checklistStatus = validationPackage?.document_checklist_status;
+  const impactStepComplete =
+    impactAssessmentStatus === "COMPLETED" &&
+    validationScope !== "NOT_ASSESSED" &&
+    validationPackage?.risk_level !== "NOT_ASSESSED";
+  const impactStepActive =
+    release?.nextStep === "IMPACT_ASSESSMENT" ||
+    release?.release_status === RELEASE_STATUS_IMPACT_ASSESSMENT_PENDING ||
+    ["PENDING", "DRAFT", "IN_PROGRESS", "REOPENED"].includes(impactAssessmentStatus ?? "");
+  const documentChecklistComplete = checklistStatus === "COMPLETED";
+  const documentChecklistActive =
+    release?.release_status === RELEASE_STATUS_VALIDATION_SCOPE_DEFINED ||
+    release?.release_status === "DOCUMENTS_PENDING" ||
+    release?.nextStep === "DOCUMENT_CHECKLIST" ||
+    ["NOT_GENERATED", "GENERATED", "IN_PROGRESS", "STALE"].includes(checklistStatus ?? "");
+  const noValidationRequired = validationScope === "NO_VALIDATION_REQUIRED";
+  const needsTesting = validationScope === "LIMITED_VALIDATION" || validationScope === "FULL_VALIDATION";
   const workflowSteps: WorkflowStep[] = WORKFLOW_STEPS.map((item, index) => {
     const currentIndex = WORKFLOW_STEPS.findIndex((candidate) => candidate.key === step);
+    if (item.key === "details" && release && hasValidationPackage) {
+      return { ...item, status: "complete" };
+    }
+    if (item.key === "assessment" && impactStepComplete) {
+      return { ...item, status: step === "assessment" ? "active" : "complete" };
+    }
+    if (item.key === "assessment" && impactStepActive) {
+      return { ...item, status: step === "assessment" || currentIndex <= index ? "active" : "complete" };
+    }
+    if (item.key === "documentChecklist") {
+      if (documentChecklistComplete) return { ...item, status: step === "documentChecklist" ? "active" : "complete" };
+      if (impactStepComplete || documentChecklistActive) {
+        return { ...item, status: step === "documentChecklist" ? "active" : "pending" };
+      }
+      return { ...item, status: "disabled" };
+    }
+    if (item.key === "testExecution") {
+      return { ...item, status: documentChecklistComplete && needsTesting ? "disabled" : "disabled" };
+    }
+    if (item.key === "validationSummary") {
+      return { ...item, status: documentChecklistComplete && noValidationRequired ? "disabled" : "disabled" };
+    }
+    if (["deviations", "traceability", "approval"].includes(item.key)) {
+      return { ...item, status: "disabled" };
+    }
     return {
       key: item.key,
       label: item.label,
@@ -382,9 +620,8 @@ function ReleaseWorkflowPanel({
       setAssessmentError(null);
     }
     try {
-      const data = await getImpactAssessment(releaseId);
+      const data = await getReleaseImpactReport(releaseId);
       setAssessment(data);
-      setAssessmentState("available");
     } catch (error) {
       const mapped = mapReleaseAxiosError(error);
       const missing =
@@ -392,7 +629,6 @@ function ReleaseWorkflowPanel({
         error.response?.status === 404 &&
         mapped.message.toLowerCase().includes("impact assessment");
       setAssessment(null);
-      setAssessmentState(missing ? "missing" : "error");
       if (!missing) setAssessmentError(mapped.message);
     } finally {
       if (!options.silent) setAssessmentLoading(false);
@@ -455,6 +691,15 @@ function ReleaseWorkflowPanel({
     }
   }, [assessmentAvailability, initialAssetId, initialMode, loadAssessment, loadDocuments, open, releaseRow]);
 
+  useEffect(() => {
+    if (!open || panelMode !== "create" || !selectedAsset) return;
+    setFormData((previous) => ({
+      ...previous,
+      previous_version: previous.previous_version || selectedAsset.asset_version || "",
+      vendor_name: previous.vendor_name || selectedAsset.supplier_name || "",
+    }));
+  }, [open, panelMode, selectedAsset]);
+
   const updateField = <K extends keyof ReleaseFormState>(key: K, value: ReleaseFormState[K]) => {
     setFormData((previous) => ({ ...previous, [key]: value }));
   };
@@ -477,8 +722,13 @@ function ReleaseWorkflowPanel({
     try {
       if (panelMode === "create") {
         if (!targetAsset || !canCreate) return;
-        const created = await createRelease(targetAsset.asset_uuid, buildCreateReleasePayload(formData, actorName));
-        toast.success("Release created successfully");
+        const result = await createRelease(targetAsset.asset_uuid, buildCreateReleasePayload(formData, actorName));
+        const created = {
+          ...result.release,
+          validation_package: result.validation_package ?? result.release.validation_package ?? null,
+          nextStep: result.nextStep ?? result.release.nextStep ?? null,
+        };
+        toast.success("Release created and validation package initialized. Next step: Impact Assessment.");
         setPanelMode("detail");
         setRelease(created);
         setAsset(targetAsset);
@@ -487,6 +737,7 @@ function ReleaseWorkflowPanel({
         setInitialFormData(releaseToForm(created));
         setEditingDetails(false);
         setStep("assessment");
+        setAssessmentState("missing");
         await onSaved();
         await loadAssessment(created.release_id, { silent: true });
         await loadDocuments(created.release_id);
@@ -557,13 +808,19 @@ function ReleaseWorkflowPanel({
 
   const renderDetails = () => (
     <form className="space-y-4" onSubmit={handleSubmit}>
-      <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+      <section className="space-y-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+        <h4 className="text-sm font-semibold text-slate-900">Asset Context</h4>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <Field label="Asset" value={asset?.asset_name || selectedAsset?.asset_name || "-"} />
           <Field label="Asset ID" value={asset?.asset_id || selectedAsset?.asset_id || release?.asset_id || "-"} />
+          <Field label="Asset Type / Class" value={[asset?.asset_type || selectedAsset?.asset_type, asset?.asset_class || selectedAsset?.asset_class].filter(Boolean).join(" / ") || "-"} />
+          <Field label="Current Validated Version" value={asset?.asset_version || selectedAsset?.asset_version || release?.previous_version || "-"} />
+          <Field label="Supplier / Vendor" value={asset?.supplier_name || selectedAsset?.supplier_name || release?.supplier_name || "-"} />
+          <Field label="Owner" value={asset?.asset_owner || selectedAsset?.asset_owner || "-"} />
           <Field label="Workflow Status" value={<WorkflowStatusBadge status={currentStatus} />} />
+          <Field label="Validation Package" value={release?.validation_package?.package_no || "-"} />
         </div>
-      </div>
+      </section>
 
       {panelMode === "create" ? (
         <div className="space-y-1">
@@ -613,7 +870,7 @@ function ReleaseWorkflowPanel({
             ) : null}
             <PermissionGuard permission={panelMode === "create" ? "ASSET_CREATE" : "ASSET_UPDATE"}>
               <Button type="submit" disabled={submitting || (panelMode === "create" && (!selectedAsset || !selectedAsset.can_create_release))}>
-                {submitting ? "Saving..." : panelMode === "create" ? "Create Release" : "Save Changes"}
+                {submitting ? "Saving..." : panelMode === "create" ? "Create Release & Continue" : "Save Changes"}
               </Button>
             </PermissionGuard>
           </>
@@ -626,60 +883,72 @@ function ReleaseWorkflowPanel({
     const diffSummary = getAssessmentDiffSummary(assessment);
     return (
       <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <Field label="Assessment Status" value={assessmentLabel(assessmentState)} />
-          <Field label="Impact Level" value={
-            assessment ? (
-              <Badge variant="outline" className={getImpactLevelBadgeClass(assessment.impact_level)}>
-                {assessment.impact_level || "Not Rated"}
-              </Badge>
-            ) : "-"
-          } />
-          <Field label="Generated" value={formatReleaseDateTime(assessment?.generated_dt)} />
-        </div>
+        <ImpactAssessmentStep
+          release={release}
+          canEdit={canEdit}
+          onLifecycleChanged={async () => {
+            if (!release) return;
+            const updated = await getReleaseById(release.release_id).catch(() => null);
+            if (updated) {
+              setRelease(updated);
+              setFormData(releaseToForm(updated));
+              setInitialFormData(releaseToForm(updated));
+              setAssessmentState(
+                updated.validation_package?.impact_assessment_status === "COMPLETED" ? "available" : "missing",
+              );
+            }
+            await onSaved();
+          }}
+          onContinueToDocumentChecklist={() => setStep("documentChecklist")}
+        />
 
-        <div className="flex flex-wrap gap-2">
-          <PermissionGuard permission="ASSET_UPDATE">
-            <Button type="button" onClick={() => void handleGenerateAssessment()} disabled={!release || assessmentLoading}>
-              <RefreshCw className="h-4 w-4" />
-              {assessment ? "Regenerate Assessment" : "Generate Assessment"}
-            </Button>
-          </PermissionGuard>
-          <PermissionGuard permission="REPORT_EXPORT">
-            <Button type="button" variant="secondary" onClick={() => void handleDownloadAssessment()} disabled={!release || !assessment}>
-              <Download className="h-4 w-4" />
-              Download Assessment PDF
-            </Button>
-          </PermissionGuard>
-        </div>
-
-        {assessmentLoading ? (
-          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-600">
-            Loading impact assessment...
-          </div>
-        ) : assessmentError ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-700">
-            {assessmentError}
-          </div>
-        ) : !assessment ? (
-          <EmptyState title="No impact assessment available" description="Generate an impact assessment using the existing release assessment API." />
-        ) : (
-          <div className="space-y-4">
-            {diffSummary ? (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <Field label="Comparison Type" value={typeof diffSummary.comparison_type === "string" ? diffSummary.comparison_type : "-"} />
-                <Field label="Similarity Ratio" value={typeof diffSummary.similarity_ratio === "number" ? diffSummary.similarity_ratio.toFixed(4) : "-"} />
-                <Field label="Changed Segments" value={typeof diffSummary.changed_segments === "number" ? diffSummary.changed_segments : "-"} />
-              </div>
-            ) : null}
-            <div className="max-h-[28rem] overflow-y-auto rounded-md border border-slate-200 bg-white p-4">
-              <p className="text-sm font-semibold text-slate-900">{assessment.report_title}</p>
-              <div className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
-                {assessment.report_content}
-              </div>
+        <section className="space-y-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h4 className="text-sm font-semibold text-slate-900">Release Comparison Report</h4>
+            <div className="flex flex-wrap gap-2">
+              <PermissionGuard permission="ASSET_UPDATE">
+                <Button type="button" variant="secondary" onClick={() => void handleGenerateAssessment()} disabled={!release || assessmentLoading}>
+                  <RefreshCw className="h-4 w-4" />
+                  {assessment ? "Regenerate Report" : "Generate Report"}
+                </Button>
+              </PermissionGuard>
+              <PermissionGuard permission="REPORT_EXPORT">
+                <Button type="button" variant="secondary" onClick={() => void handleDownloadAssessment()} disabled={!release || !assessment}>
+                  <Download className="h-4 w-4" />
+                  Download Report
+                </Button>
+              </PermissionGuard>
             </div>
           </div>
-        )}
+
+          {assessmentLoading ? (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-600">
+              Loading comparison report...
+            </div>
+          ) : assessmentError ? (
+            <div className="rounded-md border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-700">
+              {assessmentError}
+            </div>
+          ) : !assessment ? (
+            <EmptyState title="No comparison report available" description="Generate the existing release comparison report when needed." />
+          ) : (
+            <div className="space-y-4">
+              {diffSummary ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field label="Comparison Type" value={typeof diffSummary.comparison_type === "string" ? diffSummary.comparison_type : "-"} />
+                  <Field label="Similarity Ratio" value={typeof diffSummary.similarity_ratio === "number" ? diffSummary.similarity_ratio.toFixed(4) : "-"} />
+                  <Field label="Changed Segments" value={typeof diffSummary.changed_segments === "number" ? diffSummary.changed_segments : "-"} />
+                </div>
+              ) : null}
+              <div className="max-h-72 overflow-y-auto rounded-md border border-slate-200 bg-white p-4">
+                <p className="text-sm font-semibold text-slate-900">{assessment.report_title}</p>
+                <div className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                  {assessment.report_content}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
     );
   };
@@ -771,37 +1040,48 @@ function ReleaseWorkflowPanel({
     );
   };
 
-  const renderDocumentation = () => (
+  const renderDocumentChecklist = () => (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <Field label="Documentation Mode" value={
-          <Badge variant="outline" className={getDocumentationModeBadgeClass(release?.documentation_mode)}>
-            {formatDocumentationMode(release?.documentation_mode)}
-          </Badge>
-        } />
-        <Field label="Source URL" value={formatValue(release?.documentation_source_url)} />
-        <Field label="Fetched At" value={formatReleaseDateTime(release?.documentation_fetched_at)} />
-      </div>
+      <DocumentChecklistStep
+        release={release}
+        canEdit={canEdit}
+        onOpenDocumentPortal={openDocumentPortal}
+        onLifecycleChanged={async () => {
+          if (!release) return;
+          const updated = await getReleaseById(release.release_id).catch(() => null);
+          if (updated) {
+            setRelease(updated);
+            setFormData(releaseToForm(updated));
+            setInitialFormData(releaseToForm(updated));
+          }
+          await loadDocuments(release.release_id);
+          await onSaved();
+        }}
+      />
+    </div>
+  );
 
-      {release?.documentation_text ? (
-        <div className="max-h-48 overflow-y-auto rounded-md border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700">
-          {release.documentation_text}
-        </div>
-      ) : null}
+  const renderPlaceholderStep = (title: string, description: string) => (
+    <EmptyState
+      title={title}
+      description={description}
+      icon={<FileText className="h-5 w-5" />}
+    />
+  );
 
+  const renderLegacyDocuments = () => (
+    <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <DocumentCount label="Authored" count={documents.authored.length} />
         <DocumentCount label="Qualification" count={documents.qualification.length} />
         <DocumentCount label="Linked" count={documents.linked.length} />
       </div>
-
       <PermissionGuard permission="DOCUMENT_VIEW">
         <Button type="button" variant="secondary" onClick={openDocumentPortal} disabled={!release}>
           <ExternalLink className="h-4 w-4" />
           Open Document Portal
         </Button>
       </PermissionGuard>
-
       {renderDocumentRows()}
     </div>
   );
@@ -819,8 +1099,9 @@ function ReleaseWorkflowPanel({
         <div className="space-y-2 rounded-md border border-slate-200 bg-white p-4">
           {[
             { label: "Release record saved", done: Boolean(release) },
-            { label: "Impact assessment generated", done: hasAssessment },
-            { label: "Documentation available", done: hasDocs },
+            { label: "Impact assessment completed", done: hasAssessment },
+            { label: "Document checklist ready", done: hasAssessment },
+            { label: "Supporting documentation available", done: hasDocs },
             { label: "Final release transition persisted", done: released },
           ].map((item) => (
             <div key={item.label} className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2">
@@ -844,8 +1125,8 @@ function ReleaseWorkflowPanel({
   return (
     <RightPanel
       open={open}
-      title={panelMode === "create" ? "Create Release" : `Release ${release?.version || ""}`}
-      description={panelMode === "create" ? "Create a release using the existing asset release API." : asset?.asset_name || release?.asset_name}
+      title={panelMode === "create" ? "Create Release" : release?.release_name || `Release ${release?.version || ""}`}
+      description={panelMode === "create" ? asset?.asset_name || selectedAsset?.asset_name || undefined : asset?.asset_name || release?.asset_name}
       onClose={onClose}
       widthClassName="max-w-6xl"
       footer={
@@ -857,7 +1138,7 @@ function ReleaseWorkflowPanel({
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="secondary" onClick={() => setStep("details")}>Details</Button>
               <Button type="button" variant="secondary" onClick={() => setStep("assessment")}>Assessment</Button>
-              <Button type="button" variant="secondary" onClick={() => setStep("documentation")}>Documentation</Button>
+              <Button type="button" variant="secondary" onClick={() => setStep("documentChecklist")} disabled={!impactStepComplete}>Document Checklist</Button>
             </div>
           ) : null}
         </div>
@@ -877,8 +1158,12 @@ function ReleaseWorkflowPanel({
         <div className="min-w-0">
           {step === "details" ? renderDetails() : null}
           {step === "assessment" ? renderAssessment() : null}
-          {step === "documentation" ? renderDocumentation() : null}
-          {step === "decision" ? renderDecision() : null}
+          {step === "documentChecklist" ? renderDocumentChecklist() : null}
+          {step === "testExecution" ? renderPlaceholderStep("Test Execution is not part of Step 3", "Complete the document checklist before future IQ / OQ / PQ execution work.") : null}
+          {step === "deviations" ? renderPlaceholderStep("Deviation management is not part of Step 3", "This step is intentionally left disabled for a later lifecycle implementation.") : null}
+          {step === "traceability" ? renderPlaceholderStep("Traceability is not part of Step 3", "RTM generation remains a later lifecycle step.") : null}
+          {step === "validationSummary" ? renderPlaceholderStep("Validation Summary is not part of Step 3", "Checklist completion can route here, but summary report generation is not implemented in this step.") : null}
+          {step === "approval" ? renderPlaceholderStep("Approval is not part of Step 3", "Final QA approval and package lock remain outside this implementation.") : null}
         </div>
       </div>
     </RightPanel>
@@ -918,8 +1203,11 @@ export function AssetReleasesPage() {
     const nextEntries = await Promise.all(
       nextRows.map(async ({ release }) => {
         try {
-          await getImpactAssessment(release.release_id);
-          return [release.release_id, "available"] as const;
+          const assessment = await getImpactAssessment(release.release_id);
+          return [
+            release.release_id,
+            assessment?.status === "COMPLETED" ? "available" : "missing",
+          ] as const;
         } catch (error) {
           if (axios.isAxiosError(error) && error.response?.status === 404) {
             return [release.release_id, "missing"] as const;
@@ -977,7 +1265,14 @@ export function AssetReleasesPage() {
       if (statusFilter && status.code !== statusFilter) return false;
       if (!query) return true;
       return [
+        release.release_name,
+        release.previous_version,
         release.version,
+        release.release_type,
+        release.environment,
+        release.release_status,
+        release.validation_package?.package_no,
+        release.validation_package?.package_status,
         release.system_config_report,
         release.documentation_text,
         release.documentation_source_url,
@@ -1107,7 +1402,7 @@ export function AssetReleasesPage() {
           <ConfirmStrip
             tone="danger"
             title="Delete release?"
-            message={`This will delete release "${releaseToDelete.release.version}" for ${releaseToDelete.asset.asset_name || releaseToDelete.asset.asset_id}.`}
+            message={`This will delete release "${releaseToDelete.release.release_name || releaseToDelete.release.version}" for ${releaseToDelete.asset.asset_name || releaseToDelete.asset.asset_id}.`}
             confirmLabel={deleting ? "Deleting..." : "Delete"}
             onConfirm={() => void handleDeleteRelease()}
             onCancel={() => setReleaseToDelete(null)}
@@ -1120,11 +1415,15 @@ export function AssetReleasesPage() {
             <TableHeader>
               <TableRow className="bg-slate-50">
                 <TableHead className="min-w-[16rem] font-semibold">Asset</TableHead>
-                <TableHead className="font-semibold">Release / Version</TableHead>
-                <TableHead className="font-semibold">Release Date</TableHead>
-                <TableHead className="font-semibold">Documentation Mode</TableHead>
-                <TableHead className="font-semibold">Impact Assessment</TableHead>
-                <TableHead className="font-semibold">Workflow Status</TableHead>
+                <TableHead className="font-semibold">Release Name</TableHead>
+                <TableHead className="font-semibold">Previous Version</TableHead>
+                <TableHead className="font-semibold">New Version</TableHead>
+                <TableHead className="font-semibold">Release Type</TableHead>
+                <TableHead className="font-semibold">Environment</TableHead>
+                <TableHead className="font-semibold">Planned Date</TableHead>
+                <TableHead className="font-semibold">Release Status</TableHead>
+                <TableHead className="font-semibold">Package No.</TableHead>
+                <TableHead className="font-semibold">Package Status</TableHead>
                 <TableHead className="font-semibold">Last Updated</TableHead>
                 <TableHead className="font-semibold text-right">Actions</TableHead>
               </TableRow>
@@ -1132,13 +1431,13 @@ export function AssetReleasesPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-slate-500">
+                  <TableCell colSpan={12} className="py-10 text-center text-slate-500">
                     Loading asset releases...
                   </TableCell>
                 </TableRow>
               ) : filteredRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8">
+                  <TableCell colSpan={12} className="py-8">
                     <EmptyState title="No releases found" description="Create a release or adjust the filters to view existing release records." />
                   </TableCell>
                 </TableRow>
@@ -1152,28 +1451,23 @@ export function AssetReleasesPage() {
                         <div className="font-medium text-slate-900">{row.asset.asset_name || row.release.asset_name || "-"}</div>
                         <p className="mt-1 text-xs text-slate-500">{row.asset.asset_id || row.release.asset_id}</p>
                       </TableCell>
-                      <TableCell className="font-medium text-slate-900">{row.release.version || "-"}</TableCell>
-                      <TableCell>{formatDate(row.release.end_dt ?? row.release.created_dt)}</TableCell>
+                      <TableCell className="font-medium text-slate-900">{row.release.release_name || "-"}</TableCell>
+                      <TableCell>{row.release.previous_version || "-"}</TableCell>
+                      <TableCell>{row.release.version || "-"}</TableCell>
+                      <TableCell>{formatReleaseEnum(row.release.release_type)}</TableCell>
+                      <TableCell>{formatReleaseEnum(row.release.environment)}</TableCell>
+                      <TableCell>{formatDate(row.release.planned_implementation_date)}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={getDocumentationModeBadgeClass(row.release.documentation_mode)}>
-                          {formatDocumentationMode(row.release.documentation_mode)}
+                        <Badge variant="outline" className={getReleaseStatusBadgeClass(row.release.release_status)}>
+                          {row.release.release_status ? formatReleaseStatus(row.release.release_status) : status.label}
                         </Badge>
                       </TableCell>
+                      <TableCell>{row.release.validation_package?.package_no || "-"}</TableCell>
                       <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={
-                            availability === "available"
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : availability === "error"
-                                ? "border-red-200 bg-red-50 text-red-700"
-                                : "border-amber-200 bg-amber-50 text-amber-700"
-                          }
-                        >
-                          {assessmentLabel(availability)}
+                        <Badge variant="outline" className={getPackageStatusBadgeClass(row.release.validation_package?.package_status)}>
+                          {formatReleaseEnum(row.release.validation_package?.package_status)}
                         </Badge>
                       </TableCell>
-                      <TableCell><WorkflowStatusBadge status={status} /></TableCell>
                       <TableCell>{formatReleaseDateTime(row.release.modified_dt ?? row.release.created_dt)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex flex-wrap items-center justify-end gap-1">

@@ -11,8 +11,10 @@ import {
 } from "../ui/table";
 import { ReleaseRecord } from "../../../services/release.service";
 import {
-  formatDocumentationMode,
-  getDocumentationModeBadgeClass,
+  formatReleaseEnum,
+  formatReleaseStatus,
+  getPackageStatusBadgeClass,
+  getReleaseStatusBadgeClass,
 } from "./releaseForm.shared";
 
 interface AssetReleaseTableProps {
@@ -41,11 +43,6 @@ const formatDate = (value?: string | null): string => {
   });
 };
 
-const getSystemConfigPreview = (value?: string | null): string => {
-  const normalized = value?.replace(/\s+/g, " ").trim();
-  return normalized || "-";
-};
-
 export function AssetReleaseTable({
   releases,
   loading,
@@ -61,58 +58,53 @@ export function AssetReleaseTable({
       <Table>
         <TableHeader>
           <TableRow className="bg-slate-50">
-            <TableHead className="font-semibold">Version</TableHead>
-            <TableHead className="font-semibold">System Configuration Report</TableHead>
-            <TableHead className="font-semibold">Created Date</TableHead>
-            <TableHead className="font-semibold">End Date</TableHead>
+            <TableHead className="font-semibold">Release Name</TableHead>
+            <TableHead className="font-semibold">Previous Version</TableHead>
+            <TableHead className="font-semibold">New Version</TableHead>
+            <TableHead className="font-semibold">Release Type</TableHead>
+            <TableHead className="font-semibold">Environment</TableHead>
+            <TableHead className="font-semibold">Planned Date</TableHead>
+            <TableHead className="font-semibold">Release Status</TableHead>
+            <TableHead className="font-semibold">Package No.</TableHead>
+            <TableHead className="font-semibold">Package Status</TableHead>
             <TableHead className="font-semibold text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+              <TableCell colSpan={10} className="py-8 text-center text-slate-500">
                 Loading releases...
               </TableCell>
             </TableRow>
           ) : releases.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+              <TableCell colSpan={10} className="py-8 text-center text-slate-500">
                 No releases found for this asset. Add the first release.
               </TableCell>
             </TableRow>
           ) : (
             releases.map((release) => {
-              const systemConfigPreview = getSystemConfigPreview(release.system_config_report);
-
               return (
                 <TableRow key={release.release_id} className="hover:bg-slate-50">
+                  <TableCell className="font-medium text-slate-900">{release.release_name || "-"}</TableCell>
+                  <TableCell>{release.previous_version || "-"}</TableCell>
+                  <TableCell>{release.version || "-"}</TableCell>
+                  <TableCell>{formatReleaseEnum(release.release_type)}</TableCell>
+                  <TableCell>{formatReleaseEnum(release.environment)}</TableCell>
+                  <TableCell title={release.planned_implementation_date ?? undefined}>
+                    {formatDate(release.planned_implementation_date)}
+                  </TableCell>
                   <TableCell>
-                    <div className="space-y-1">
-                      <p className="font-medium text-slate-900">{release.version || "-"}</p>
-                      {release.documentation_mode ? (
-                        <Badge
-                          variant="outline"
-                          className={getDocumentationModeBadgeClass(release.documentation_mode)}
-                        >
-                          {formatDocumentationMode(release.documentation_mode)}
-                        </Badge>
-                      ) : null}
-                    </div>
+                    <Badge variant="outline" className={getReleaseStatusBadgeClass(release.release_status)}>
+                      {formatReleaseStatus(release.release_status)}
+                    </Badge>
                   </TableCell>
-                  <TableCell className="max-w-0">
-                    <div
-                      className="max-w-[14rem] overflow-hidden text-ellipsis whitespace-nowrap text-slate-600"
-                      title={systemConfigPreview}
-                    >
-                      {systemConfigPreview}
-                    </div>
-                  </TableCell>
-                  <TableCell title={release.created_dt ?? undefined}>
-                    {formatDate(release.created_dt)}
-                  </TableCell>
-                  <TableCell title={release.end_dt ?? undefined}>
-                    {formatDate(release.end_dt)}
+                  <TableCell>{release.validation_package?.package_no || "-"}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={getPackageStatusBadgeClass(release.validation_package?.package_status)}>
+                      {formatReleaseEnum(release.validation_package?.package_status)}
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">

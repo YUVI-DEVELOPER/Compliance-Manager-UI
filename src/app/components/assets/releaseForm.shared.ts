@@ -10,9 +10,37 @@ import {
 
 export const DOCUMENTATION_MODE_MANUAL = "MANUAL";
 export const DOCUMENTATION_MODE_ONLINE_FETCH = "ONLINE_FETCH";
+export const RELEASE_STATUS_IMPACT_ASSESSMENT_PENDING = "IMPACT_ASSESSMENT_PENDING";
+export const RELEASE_STATUS_VALIDATION_SCOPE_DEFINED = "VALIDATION_SCOPE_DEFINED";
+export const RELEASE_STATUS_DOCUMENTS_PENDING = "DOCUMENTS_PENDING";
+export const RELEASE_STATUS_TESTING_PENDING = "TESTING_PENDING";
+export const RELEASE_STATUS_VALIDATION_SUMMARY_PENDING = "VALIDATION_SUMMARY_PENDING";
+
+export const RELEASE_TYPE_OPTIONS = [
+  "MAJOR",
+  "MINOR",
+  "PATCH",
+  "HOTFIX",
+  "CONFIGURATION_CHANGE",
+  "SECURITY_UPDATE",
+  "INFRASTRUCTURE_CHANGE",
+] as const;
+
+export const ENVIRONMENT_OPTIONS = ["DEV", "QA", "UAT", "PROD", "MULTI_ENV"] as const;
+export const EXPECTED_IMPACT_OPTIONS = ["YES", "NO", "UNKNOWN"] as const;
 
 export interface ReleaseFormState {
+  release_name: string;
+  previous_version: string;
   version: string;
+  release_type: string;
+  vendor_name: string;
+  planned_implementation_date: string;
+  environment: string;
+  release_description: string;
+  business_reason: string;
+  change_control_no: string;
+  expected_validated_functionality_impact: string;
   system_config_report: string;
   documentation_mode: string;
   documentation_text: string;
@@ -25,7 +53,17 @@ export interface ReleaseFieldErrors {
 }
 
 export const EMPTY_RELEASE_FORM: ReleaseFormState = {
+  release_name: "",
+  previous_version: "",
   version: "",
+  release_type: "",
+  vendor_name: "",
+  planned_implementation_date: "",
+  environment: "",
+  release_description: "",
+  business_reason: "",
+  change_control_no: "",
+  expected_validated_functionality_impact: "",
   system_config_report: "",
   documentation_mode: DOCUMENTATION_MODE_MANUAL,
   documentation_text: "",
@@ -56,6 +94,47 @@ export const formatDocumentationMode = (value?: string | null): string => {
   if (value === DOCUMENTATION_MODE_MANUAL) return "Manual";
   if (value === DOCUMENTATION_MODE_ONLINE_FETCH) return "Online Fetch";
   return value?.trim() || "-";
+};
+
+export const formatReleaseEnum = (value?: string | null): string => {
+  const normalized = value?.trim();
+  if (!normalized) return "-";
+  return normalized
+    .split("_")
+    .map((part) => part.charAt(0) + part.slice(1).toLowerCase())
+    .join(" ");
+};
+
+export const formatReleaseStatus = (value?: string | null): string => formatReleaseEnum(value);
+
+export const getReleaseStatusBadgeClass = (value?: string | null): string => {
+  if (value === RELEASE_STATUS_IMPACT_ASSESSMENT_PENDING) {
+    return "border-amber-200 bg-amber-50 text-amber-700";
+  }
+  if (value === RELEASE_STATUS_VALIDATION_SCOPE_DEFINED) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (value === RELEASE_STATUS_DOCUMENTS_PENDING || value === RELEASE_STATUS_TESTING_PENDING || value === RELEASE_STATUS_VALIDATION_SUMMARY_PENDING) {
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  }
+  if (value === "RELEASED" || value === "APPROVED") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (value === "REJECTED" || value === "CANCELLED") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
+  return "border-slate-200 bg-slate-50 text-slate-700";
+};
+
+export const getPackageStatusBadgeClass = (value?: string | null): string => {
+  if (value === "DRAFT") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (value === "VALIDATION_SCOPE_DEFINED") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (value === "DOCUMENTS_PENDING" || value === "TESTING_PENDING" || value === "VALIDATION_SUMMARY_PENDING") {
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  }
+  if (value === "APPROVED" || value === "COMPLETE") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (value === "REJECTED" || value === "BLOCKED") return "border-red-200 bg-red-50 text-red-700";
+  return "border-slate-200 bg-slate-50 text-slate-700";
 };
 
 export const getDocumentationModeBadgeClass = (value?: string | null): string => {
@@ -97,6 +176,33 @@ const fieldErrorFromMessage = (message?: string | null): ReleaseFieldErrors => {
   if (!nextMessage) return {};
 
   const normalized = nextMessage.toLowerCase();
+  if (normalized.includes("release_name") || normalized.includes("release name")) {
+    return { release_name: nextMessage };
+  }
+  if (normalized.includes("previous_version") || normalized.includes("previous version")) {
+    return { previous_version: nextMessage };
+  }
+  if (normalized.includes("release_type") || normalized.includes("release type")) {
+    return { release_type: nextMessage };
+  }
+  if (normalized.includes("planned_implementation_date") || normalized.includes("planned implementation")) {
+    return { planned_implementation_date: nextMessage };
+  }
+  if (normalized.includes("environment")) {
+    return { environment: nextMessage };
+  }
+  if (normalized.includes("release_description") || normalized.includes("release description")) {
+    return { release_description: nextMessage };
+  }
+  if (normalized.includes("business_reason") || normalized.includes("business reason")) {
+    return { business_reason: nextMessage };
+  }
+  if (
+    normalized.includes("expected_validated_functionality_impact") ||
+    normalized.includes("validated functionality")
+  ) {
+    return { expected_validated_functionality_impact: nextMessage };
+  }
   if (normalized.includes("version")) {
     return { version: nextMessage };
   }
@@ -120,7 +226,17 @@ const fieldErrorFromMessage = (message?: string | null): ReleaseFieldErrors => {
 };
 
 export const releaseToForm = (release: ReleaseRecord): ReleaseFormState => ({
+  release_name: release.release_name ?? "",
+  previous_version: release.previous_version ?? "",
   version: release.version ?? "",
+  release_type: release.release_type ?? "",
+  vendor_name: release.vendor_name ?? "",
+  planned_implementation_date: normalizeDateInput(release.planned_implementation_date),
+  environment: release.environment ?? "",
+  release_description: release.release_description ?? "",
+  business_reason: release.business_reason ?? "",
+  change_control_no: release.change_control_no ?? "",
+  expected_validated_functionality_impact: release.expected_validated_functionality_impact ?? "",
   system_config_report: release.system_config_report ?? "",
   documentation_mode: release.documentation_mode ?? DOCUMENTATION_MODE_MANUAL,
   documentation_text: release.documentation_text ?? "",
@@ -133,7 +249,15 @@ export const buildCreateReleasePayload = (
   createdBy: string,
 ): CreateReleasePayload => {
   const payload: CreateReleasePayload = {
+    release_name: form.release_name.trim(),
+    previous_version: form.previous_version.trim(),
     version: form.version.trim(),
+    release_type: form.release_type.trim().toUpperCase(),
+    planned_implementation_date: form.planned_implementation_date,
+    environment: form.environment.trim().toUpperCase(),
+    release_description: form.release_description.trim(),
+    business_reason: form.business_reason.trim(),
+    expected_validated_functionality_impact: form.expected_validated_functionality_impact.trim().toUpperCase(),
     created_by: createdBy,
     documentation_mode: form.documentation_mode,
   };
@@ -142,7 +266,10 @@ export const buildCreateReleasePayload = (
   const documentationText = optionalString(form.documentation_text);
   const documentationSourceUrl = optionalString(form.documentation_source_url);
   const endDate = optionalString(form.end_dt);
+  const vendorName = optionalString(form.vendor_name);
+  const changeControlNo = optionalString(form.change_control_no);
 
+  if (vendorName !== null) payload.vendor_name = vendorName;
   if (systemConfigReport !== null) payload.system_config_report = systemConfigReport;
   if (form.documentation_mode === DOCUMENTATION_MODE_MANUAL && documentationText !== null) {
     payload.documentation_text = documentationText;
@@ -150,6 +277,7 @@ export const buildCreateReleasePayload = (
   if (form.documentation_mode === DOCUMENTATION_MODE_ONLINE_FETCH && documentationSourceUrl !== null) {
     payload.documentation_source_url = documentationSourceUrl;
   }
+  if (changeControlNo !== null) payload.change_control_no = changeControlNo;
   if (endDate !== null) payload.end_dt = endDate;
 
   return payload;
@@ -162,10 +290,70 @@ export const buildUpdateReleasePayload = (
 ): UpdateReleasePayload => {
   const payload: UpdateReleasePayload = { modified_by: modifiedBy };
 
+  const nextReleaseName = form.release_name.trim();
+  const initialReleaseName = initialForm.release_name.trim();
+  if (nextReleaseName !== initialReleaseName) {
+    payload.release_name = nextReleaseName;
+  }
+
+  const nextPreviousVersion = form.previous_version.trim();
+  const initialPreviousVersion = initialForm.previous_version.trim();
+  if (nextPreviousVersion !== initialPreviousVersion) {
+    payload.previous_version = nextPreviousVersion;
+  }
+
   const nextVersion = form.version.trim();
   const initialVersion = initialForm.version.trim();
   if (nextVersion !== initialVersion) {
     payload.version = nextVersion;
+  }
+
+  const nextReleaseType = form.release_type.trim().toUpperCase();
+  const initialReleaseType = initialForm.release_type.trim().toUpperCase();
+  if (nextReleaseType !== initialReleaseType) {
+    payload.release_type = nextReleaseType;
+  }
+
+  const nextVendorName = optionalString(form.vendor_name);
+  const initialVendorName = optionalString(initialForm.vendor_name);
+  if (nextVendorName !== initialVendorName) {
+    payload.vendor_name = nextVendorName;
+  }
+
+  const nextPlannedDate = optionalString(form.planned_implementation_date);
+  const initialPlannedDate = optionalString(initialForm.planned_implementation_date);
+  if (nextPlannedDate !== initialPlannedDate && nextPlannedDate !== null) {
+    payload.planned_implementation_date = nextPlannedDate;
+  }
+
+  const nextEnvironment = form.environment.trim().toUpperCase();
+  const initialEnvironment = initialForm.environment.trim().toUpperCase();
+  if (nextEnvironment !== initialEnvironment) {
+    payload.environment = nextEnvironment;
+  }
+
+  const nextReleaseDescription = form.release_description.trim();
+  const initialReleaseDescription = initialForm.release_description.trim();
+  if (nextReleaseDescription !== initialReleaseDescription) {
+    payload.release_description = nextReleaseDescription;
+  }
+
+  const nextBusinessReason = form.business_reason.trim();
+  const initialBusinessReason = initialForm.business_reason.trim();
+  if (nextBusinessReason !== initialBusinessReason) {
+    payload.business_reason = nextBusinessReason;
+  }
+
+  const nextChangeControlNo = optionalString(form.change_control_no);
+  const initialChangeControlNo = optionalString(initialForm.change_control_no);
+  if (nextChangeControlNo !== initialChangeControlNo) {
+    payload.change_control_no = nextChangeControlNo;
+  }
+
+  const nextExpectedImpact = form.expected_validated_functionality_impact.trim().toUpperCase();
+  const initialExpectedImpact = initialForm.expected_validated_functionality_impact.trim().toUpperCase();
+  if (nextExpectedImpact !== initialExpectedImpact) {
+    payload.expected_validated_functionality_impact = nextExpectedImpact;
   }
 
   const nextSystemConfig = optionalString(form.system_config_report);
@@ -216,8 +404,49 @@ export const validateReleaseForm = (
 ): ReleaseFieldErrors => {
   const errors: ReleaseFieldErrors = {};
 
+  if (!form.release_name.trim()) {
+    errors.release_name = "Release name is required";
+  }
+
+  if (!form.previous_version.trim()) {
+    errors.previous_version = "Previous version is required";
+  }
+
   if (!form.version.trim()) {
-    errors.version = "Version is required";
+    errors.version = "New version is required";
+  }
+
+  const releaseType = form.release_type.trim().toUpperCase();
+  if (!releaseType) {
+    errors.release_type = "Release type is required";
+  } else if (!RELEASE_TYPE_OPTIONS.includes(releaseType as (typeof RELEASE_TYPE_OPTIONS)[number])) {
+    errors.release_type = "Select a valid release type";
+  }
+
+  if (!form.planned_implementation_date.trim()) {
+    errors.planned_implementation_date = "Planned implementation date is required";
+  }
+
+  const environment = form.environment.trim().toUpperCase();
+  if (!environment) {
+    errors.environment = "Environment is required";
+  } else if (!ENVIRONMENT_OPTIONS.includes(environment as (typeof ENVIRONMENT_OPTIONS)[number])) {
+    errors.environment = "Select a valid environment";
+  }
+
+  if (!form.release_description.trim()) {
+    errors.release_description = "Release description is required";
+  }
+
+  if (!form.business_reason.trim()) {
+    errors.business_reason = "Business reason is required";
+  }
+
+  const expectedImpact = form.expected_validated_functionality_impact.trim().toUpperCase();
+  if (!expectedImpact) {
+    errors.expected_validated_functionality_impact = "Expected validated functionality impact is required";
+  } else if (!EXPECTED_IMPACT_OPTIONS.includes(expectedImpact as (typeof EXPECTED_IMPACT_OPTIONS)[number])) {
+    errors.expected_validated_functionality_impact = "Select YES, NO, or UNKNOWN";
   }
 
   const documentationMode = form.documentation_mode.trim().toUpperCase();

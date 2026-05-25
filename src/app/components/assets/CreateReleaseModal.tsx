@@ -11,8 +11,12 @@ import {
   DOCUMENTATION_MODE_MANUAL,
   DOCUMENTATION_MODE_ONLINE_FETCH,
   EMPTY_RELEASE_FORM,
+  ENVIRONMENT_OPTIONS,
+  EXPECTED_IMPACT_OPTIONS,
   formatDocumentationMode,
+  formatReleaseEnum,
   mapReleaseAxiosError,
+  RELEASE_TYPE_OPTIONS,
   ReleaseFieldErrors,
   ReleaseFormState,
   renderReleaseFieldError,
@@ -70,7 +74,7 @@ export function CreateReleaseModal({
     setFieldErrors({});
     try {
       await createRelease(assetId, buildCreateReleasePayload(formData, actorName));
-      toast.success("Release created and impact assessment generated.");
+      toast.success("Release created and validation package initialized. Next step: Impact Assessment.");
       await onCreated();
       onClose();
     } catch (error) {
@@ -99,7 +103,7 @@ export function CreateReleaseModal({
             Cancel
           </Button>
           <Button type="submit" form="create-release-form" disabled={submitting || !assetId}>
-            {submitting ? "Creating..." : "Create Release"}
+            {submitting ? "Creating..." : "Create Release & Continue"}
           </Button>
         </>
       }
@@ -108,11 +112,31 @@ export function CreateReleaseModal({
         {renderReleaseFieldError(fieldErrors, "form")}
 
         <section className="space-y-3">
-          <h4 className="text-sm font-semibold text-slate-800">Release Info</h4>
+          <h4 className="text-sm font-semibold text-slate-800">Release Details</h4>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <Input
-                label="Version"
+                label="Release Name"
+                value={formData.release_name}
+                onChange={(event) => updateField("release_name", event.target.value)}
+                required
+              />
+              {renderReleaseFieldError(fieldErrors, "release_name")}
+            </div>
+
+            <div className="space-y-1">
+              <Input
+                label="Previous Version"
+                value={formData.previous_version}
+                onChange={(event) => updateField("previous_version", event.target.value)}
+                required
+              />
+              {renderReleaseFieldError(fieldErrors, "previous_version")}
+            </div>
+
+            <div className="space-y-1">
+              <Input
+                label="New Version"
                 value={formData.version}
                 onChange={(event) => updateField("version", event.target.value)}
                 required
@@ -121,16 +145,61 @@ export function CreateReleaseModal({
             </div>
 
             <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Release Type</label>
+              <select
+                className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm bg-input-background"
+                value={formData.release_type}
+                onChange={(event) => updateField("release_type", event.target.value)}
+                required
+              >
+                <option value="">Select release type</option>
+                {RELEASE_TYPE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{formatReleaseEnum(option)}</option>
+                ))}
+              </select>
+              {renderReleaseFieldError(fieldErrors, "release_type")}
+            </div>
+
+            <div className="space-y-1">
               <Input
-                label="End Date"
+                label="Planned Implementation Date"
                 type="date"
-                value={formData.end_dt}
-                onChange={(event) => updateField("end_dt", event.target.value)}
+                value={formData.planned_implementation_date}
+                onChange={(event) => updateField("planned_implementation_date", event.target.value)}
+                required
               />
-              {renderReleaseFieldError(fieldErrors, "end_dt")}
+              {renderReleaseFieldError(fieldErrors, "planned_implementation_date")}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Environment</label>
+              <select
+                className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm bg-input-background"
+                value={formData.environment}
+                onChange={(event) => updateField("environment", event.target.value)}
+                required
+              >
+                <option value="">Select environment</option>
+                {ENVIRONMENT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{formatReleaseEnum(option)}</option>
+                ))}
+              </select>
+              {renderReleaseFieldError(fieldErrors, "environment")}
+            </div>
+
+            <div className="space-y-1 col-span-2">
+              <Input
+                label="Vendor"
+                value={formData.vendor_name}
+                onChange={(event) => updateField("vendor_name", event.target.value)}
+              />
+              {renderReleaseFieldError(fieldErrors, "vendor_name")}
             </div>
           </div>
+        </section>
 
+        <section className="space-y-3">
+          <h4 className="text-sm font-semibold text-slate-800">Release Documentation</h4>
           <div className="space-y-1">
             <label className="text-sm font-medium text-slate-700">Documentation Mode</label>
             <select
@@ -188,6 +257,55 @@ export function CreateReleaseModal({
               {renderReleaseFieldError(fieldErrors, "documentation_source_url")}
             </div>
           )}
+        </section>
+
+        <section className="space-y-3">
+          <h4 className="text-sm font-semibold text-slate-800">Business Justification</h4>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Release Description</label>
+            <Textarea
+              rows={4}
+              value={formData.release_description}
+              onChange={(event) => updateField("release_description", event.target.value)}
+            />
+            {renderReleaseFieldError(fieldErrors, "release_description")}
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Business Reason</label>
+            <Textarea
+              rows={4}
+              value={formData.business_reason}
+              onChange={(event) => updateField("business_reason", event.target.value)}
+            />
+            {renderReleaseFieldError(fieldErrors, "business_reason")}
+          </div>
+          <div className="space-y-1">
+            <Input
+              label="Change Control No."
+              value={formData.change_control_no}
+              onChange={(event) => updateField("change_control_no", event.target.value)}
+            />
+            {renderReleaseFieldError(fieldErrors, "change_control_no")}
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <h4 className="text-sm font-semibold text-slate-800">Initial Compliance Classification</h4>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Expected Validated Functionality Impact</label>
+            <select
+              className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm bg-input-background"
+              value={formData.expected_validated_functionality_impact}
+              onChange={(event) => updateField("expected_validated_functionality_impact", event.target.value)}
+              required
+            >
+              <option value="">Select impact</option>
+              {EXPECTED_IMPACT_OPTIONS.map((option) => (
+                <option key={option} value={option}>{formatReleaseEnum(option)}</option>
+              ))}
+            </select>
+            {renderReleaseFieldError(fieldErrors, "expected_validated_functionality_impact")}
+          </div>
         </section>
       </form>
     </Modal>
